@@ -28,6 +28,10 @@ interface Dell's app uses. It runs without Dell's background services.
 - Live CPU and GPU temperatures, per-zone fan speeds (rpm and percent), with a history chart.
 - Thermal modes: Quiet, Balanced, Performance, Full Speed, Battery Saver and G-Mode.
 - Fan boost per fan, through the firmware's own allow-listed calls only.
+- An emergency rule: when any sensor stays at the trigger (98 °C by default, can only be lowered) for 5 s,
+  every fan goes to full until it has stayed 6 °C cooler for 30 s, then back to your setting.
+- Fan fault warnings: a fan standing still while its partner spins, every fan on a hot sensor reading
+  0 rpm, and a speed reading that never moves.
 - A tray icon, a daily log, and a warning when Windows Energy Saver is limiting performance.
 - A read-only check that Dell's services are still set the way you left them.
 

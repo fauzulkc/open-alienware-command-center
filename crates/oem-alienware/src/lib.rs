@@ -397,6 +397,7 @@ mod tests {
         assert_eq!(decode_rpm(12_000, None), None);
         assert_eq!(decode_profile(0xAB), Some(0xAB));
         assert_eq!(decode_profile(ERROR), None);
+        assert_eq!(decode_profile(0x1A0), None, "a value past one byte must not read as Balanced (0xA0)");
     }
 
     /// P-05's comparison: identical passes; live values inside tolerance pass; a changed fan id or a missing

@@ -24,7 +24,7 @@ export interface Effects { motion: boolean; hover: boolean; press: boolean; larg
 export interface ControlState { enabled: boolean; reasons: string[]; route?: string | null; last?: ModeChange | null; notes?: string[]; boosted?: Record<string, number> }
 export interface BoostChange { fan: string; level: number; before: number | null; after: number | null; rpm_before: number | null; rpm_after: number | null; confirmed: boolean }
 export interface LogDay { day: string; bytes: number }
-export interface Controls { modes: ControlState; fans: ControlState; lighting: ControlState }
+export interface Controls { modes: ControlState; fans: ControlState; lighting: ControlState; emergency?: { active: boolean; triggerC: number | null; releaseC: number | null } }
 export interface ModeChange { requested: string; before: string | null; after: string | null; confirmed: boolean; unchanged: boolean }
 
 const inApp = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;

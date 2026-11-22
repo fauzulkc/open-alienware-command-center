@@ -42,6 +42,28 @@ pub fn toggle_target(current: Option<u8>, previous: Option<u8>, default_profile:
     }
 }
 
+/// The "step through modes" order: the everyday modes, quietest to loudest, then round again. Full Speed and
+/// Battery Saver are left out (one is loud, the other slow) and stay a click away in the app.
+pub const CYCLE: [u8; 4] = [0xA3, 0xA0, 0xA1, wiregent_oem_alienware::GMODE];
+
+/// The next mode in [`CYCLE`]; from a mode outside it (or none read), Balanced.
+pub fn cycle_target(current: Option<u8>) -> u8 {
+    match current.and_then(|c| CYCLE.iter().position(|m| *m == c)) {
+        Some(i) => CYCLE[(i + 1) % CYCLE.len()],
+        None => wiregent_oem_alienware::BALANCED,
+    }
+}
+
+/// What a press does, by the person's "boost key" setting: "cycle" steps through modes, anything else toggles
+/// G-Mode like AWCC.
+pub fn key_target(behaviour: &str, current: Option<u8>, previous: Option<u8>, default_profile: u8) -> u8 {
+    if behaviour == "cycle" {
+        cycle_target(current)
+    } else {
+        toggle_target(current, previous, default_profile)
+    }
+}
+
 #[cfg(windows)]
 pub mod win {
     use std::cell::RefCell;
@@ -138,6 +160,22 @@ mod tests {
         assert_eq!(toggle_target(Some(0xAB), Some(0xA1), 0xA0), 0xA1, "back to the mode it left");
         assert_eq!(toggle_target(Some(0xAB), None, 0xA3), 0xA3, "or the default");
         assert_eq!(toggle_target(Some(0xAB), Some(0xAB), 0xA0), 0xA0);
+    }
+
+    /// The "step through modes" setting: Quiet → Balanced → Performance → G-Mode → Quiet.
+    #[test]
+    fn the_cycle_setting_steps_through_modes() {
+        let mut m = Some(0xA3);
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let next = key_target("cycle", m, None, 0xA0);
+            seen.push(next);
+            m = Some(next);
+        }
+        assert_eq!(seen, vec![0xA0, 0xA1, 0xAB, 0xA3, 0xA0]);
+        assert_eq!(cycle_target(Some(0xA4)), 0xA0, "from Full Speed: Balanced");
+        assert_eq!(cycle_target(None), 0xA0, "no reading: Balanced");
+        assert_eq!(key_target("awcc", Some(0xA0), None, 0xA0), 0xAB, "the AWCC setting still toggles G-Mode");
     }
 
     #[test]

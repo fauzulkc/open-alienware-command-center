@@ -4,7 +4,7 @@ use crate::Firmware;
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use wiregent_oem_alienware::rules::{FanFault, FanPairWatch, Sample, StuckReading, StuckWatch};
+use wiregent_oem_alienware::rules::{FanFault, FanPairWatch, Sample, StuckReading, StuckWatch, ZoneStopped, ZoneStoppedWatch};
 use wiregent_oem_alienware::*;
 
 /// A sensor's role, by the ids the x17 R2 reported (0x01 follows the CPU fans, 0x06 the GPU fans).
@@ -40,6 +40,8 @@ pub enum Alert {
     FanFault(FanFault),
     /// A fan's reported speed doesn't move while its partner's does.
     StuckReading(StuckReading),
+    /// Every fan on a hot sensor read 0 RPM: nothing is cooling it.
+    ZoneStopped(ZoneStopped),
     SensorStale { sensor: u8, name: String },
 }
 
@@ -48,6 +50,7 @@ impl Alert {
         match self {
             Alert::FanFault(f) => format!("Fan 0x{:02X} stood still for {} s while the {} sensor read up to {} °C and its partner spun: likely a fan fault. Check it before any fan control.", f.fan, (f.to_ms - f.from_ms) / 1000, sensor_name(f.sensor), f.peak_c),
             Alert::StuckReading(s) => format!("Fan 0x{:02X} has reported exactly {} RPM for {} s while its partner's speed moved {} RPM: its speed reading isn't a real measurement.", s.fan, s.rpm, (s.to_ms - s.from_ms) / 1000, s.partner_swing_rpm),
+            Alert::ZoneStopped(z) => format!("Every {} fan ({}) has read 0 RPM for {} s while the {} sensor read up to {} °C: nothing is cooling it. Ease the load and have the fans checked.", sensor_name(z.sensor), z.fans.iter().map(|f| format!("0x{f:02X}")).collect::<Vec<_>>().join(", "), (z.to_ms - z.from_ms) / 1000, sensor_name(z.sensor), z.peak_c),
             Alert::SensorStale { name, .. } => format!("No valid {name} temperature for 30 s or more."),
         }
     }
@@ -72,6 +75,7 @@ pub struct Reader<F: Firmware> {
     max_rpm: BTreeMap<u8, Option<u32>>,
     fan_pair: FanPairWatch,
     stuck: StuckWatch,
+    zone: ZoneStoppedWatch,
     last_valid: BTreeMap<u8, u64>,
     stale_reported: BTreeMap<u8, bool>,
     started_ms: Option<u64>,
@@ -82,7 +86,7 @@ impl<F: Firmware> Reader<F> {
     pub fn new(fw: F) -> Result<Self> {
         let discovery = Discovery::run(|c| fw.read(c).ok()).map_err(|e| anyhow!("{e}"))?;
         let max_rpm = discovery.fans.iter().map(|&f| (f, fw.read(read_fan_max_rpm(f)).ok().filter(|v| *v != 0 && *v != ERROR))).collect();
-        Ok(Reader { fw, discovery, max_rpm, fan_pair: FanPairWatch::default(), stuck: StuckWatch::default(), last_valid: BTreeMap::new(), stale_reported: BTreeMap::new(), started_ms: None })
+        Ok(Reader { fw, discovery, max_rpm, fan_pair: FanPairWatch::default(), stuck: StuckWatch::default(), zone: ZoneStoppedWatch::default(), last_valid: BTreeMap::new(), stale_reported: BTreeMap::new(), started_ms: None })
     }
 
     pub fn tick(&mut self, t_ms: u64) -> Snapshot {
@@ -118,6 +122,7 @@ impl<F: Firmware> Reader<F> {
         let sample = Sample { t_ms, temps, rpm };
         alerts.extend(self.fan_pair.push(&self.discovery, &sample).into_iter().map(Alert::FanFault));
         alerts.extend(self.stuck.push(&self.discovery, &sample).into_iter().map(Alert::StuckReading));
+        alerts.extend(self.zone.push(&self.discovery, &sample).into_iter().map(Alert::ZoneStopped));
         Snapshot { t_ms, sensors, fans, profile, profile_name: profile.map(profile_name), alerts }
     }
 
@@ -129,6 +134,7 @@ impl<F: Firmware> Reader<F> {
         self.started_ms = None;
         self.fan_pair = FanPairWatch::default();
         self.stuck = StuckWatch::default();
+        self.zone = ZoneStoppedWatch::default();
     }
 
     /// The firmware this reader owns (the controller writes through it: one connection, one writer).
@@ -190,5 +196,25 @@ mod tests {
         assert_eq!(fired.len(), 1, "{fired:?}");
         assert!(matches!(&fired[0], Alert::FanFault(f) if f.fan == 0x3B));
         // The replay repeats one snapshot, so the partner never moves: no stuck-reading alert from it.
+    }
+
+    /// The owner's laptop since 2026-11-13: both CPU fans at 0 RPM at 100 °C. The reader says so within
+    /// about 30 s, once, and the fan-pair alert stays silent (no partner spins).
+    #[test]
+    fn both_cpu_fans_stopped_while_hot_raises_one_alert() {
+        let fw = Replay::october();
+        fw.set_rpm(0x32, 0);
+        let mut r = Reader::new(fw).unwrap();
+        let mut fired = Vec::new();
+        for i in 0..=40 {
+            fired.extend(r.tick(i * 1_000).alerts);
+        }
+        assert_eq!(fired.len(), 1, "{fired:?}");
+        let Alert::ZoneStopped(z) = &fired[0] else { panic!("{fired:?}") };
+        assert_eq!((z.sensor, z.fans.clone()), (0x01, vec![0x32, 0x3B]));
+        assert!(fired[0].text().contains("Every CPU fan (0x32, 0x3B)"), "{}", fired[0].text());
+        assert_eq!(serde_json::to_value(&fired[0]).unwrap()["kind"], "zone-stopped");
+        r.resumed();
+        assert!(r.tick(41_000).alerts.is_empty(), "after sleep the episode starts over");
     }
 }

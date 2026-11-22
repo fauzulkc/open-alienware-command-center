@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Point } from './api';
+import { drawnRevPerSec, MAX_FRAME_S, rotorPercent } from './logic';
 
 // ---------------------------------------------------------------- small pieces
 
@@ -181,12 +182,12 @@ export function FanRotor({ rpm, max, label, id, note, flag }: { rpm: number | nu
   useEffect(() => {
     let raf = 0, last = performance.now(), angle = 0, omega = 0;
     const step = (now: number) => {
-      const dt = Math.min(0.05, (now - last) / 1000);
+      const dt = Math.min(MAX_FRAME_S, (now - last) / 1000);
       last = now;
       // Drawn revolutions per second, capped at 2: with 11 blades a gap is 32.7°, and at 60 frames a second a
       // rotor turning near one gap per frame looks frozen (the wagon-wheel strobe). 4600 RPM at the old scale
       // was 34.5° a frame and read as stopped; 2 rev/s is 12° a frame, clearly turning. Speed shows in the blur.
-      const goal = 2 * Math.pow(Math.min(1, target.current / 5000), 0.7);
+      const goal = drawnRevPerSec(target.current);
       const tau = goal > omega ? 0.9 : 2.6; // spins up faster than it coasts down
       omega += (goal - omega) * (1 - Math.exp(-dt / tau));
       angle = (angle + omega * 360 * dt) % 360;
@@ -202,7 +203,7 @@ export function FanRotor({ rpm, max, label, id, note, flag }: { rpm: number | nu
   }, []);
   const blades = Array.from({ length: 11 }, (_, i) => i * (360 / 11));
   const blade = 'M50 50 C52 40 58 31 67 27 C63 34 58 42 54 51 Z';
-  const pct = rpm != null && max ? Math.min(100, Math.round((rpm / max) * 100)) : null;
+  const pct = rotorPercent(rpm, max);
   return (
     <Tip text={note ?? `${label}${id ? ` (fan ${id})` : ''}: ${rpm ?? '—'} RPM measured${max ? `, ${pct ?? 0}% of the ${max} RPM it reports as its maximum (AWCC's "zone speed")` : ''}.`}>
       <div className={`rotor ${flag ?? ''}`}>

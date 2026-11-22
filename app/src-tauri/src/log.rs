@@ -74,6 +74,21 @@ pub fn civil(days: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// YYYY-MM-DD → days since 1970-01-01 (the inverse of [`civil`]).
+pub fn day_number(day: &str) -> Option<i64> {
+    let mut parts = day.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
 fn day_of(name: &str) -> Option<String> {
     let d = name.strip_suffix(".jsonl")?;
     (d.len() == 10 && d.as_bytes()[4] == b'-' && d.as_bytes()[7] == b'-' && d.chars().filter(|c| c.is_ascii_digit()).count() == 8).then(|| d.to_string())
@@ -109,14 +124,17 @@ pub fn append(dir: &Path, day: &str, point: &Value) -> std::io::Result<()> {
     f.write_all(&line)
 }
 
-/// Deletes days older than `keep_days` (counting today), then the oldest until the folder fits `max_mb`.
-/// Returns the days removed. Today's file is never removed.
+/// Deletes days older than `keep_days` calendar days (counting today), then the oldest until the folder fits
+/// `max_mb`. Returns the days removed. Today's file is never removed. Age is by date, not by how many files
+/// there are: after a few weeks away, old files still go.
 pub fn cleanup(dir: &Path, today: &str, s: &LogSettings) -> Vec<String> {
     let all = days(dir);
     let mut removed = Vec::new();
     let mut kept: Vec<&Day> = Vec::new();
-    for (i, d) in all.iter().enumerate() {
-        if d.day != today && (i as u32) >= s.keep_days {
+    let today_n = day_number(today);
+    for d in all.iter() {
+        let age = today_n.zip(day_number(&d.day)).map(|(t, n)| t - n).unwrap_or(0);
+        if d.day != today && age >= s.keep_days as i64 {
             if std::fs::remove_file(dir.join(format!("{}.jsonl", d.day))).is_ok() {
                 removed.push(d.day.clone());
             }
@@ -200,5 +218,28 @@ mod tests {
         let removed = cleanup(d.path(), "2026-11-05", &LogSettings { keep_days: 30, max_mb: 1, ..Default::default() });
         assert_eq!(removed, vec!["2026-11-03", "2026-11-04"], "oldest first until it fits; today stays even over the cap");
         assert_eq!(days(d.path()).len(), 1);
+    }
+
+    /// Age counts calendar days: after three weeks away, a file from before is older than 14 days even though
+    /// only two files exist. A file dated in the future (a clock that was wrong) isn't "old".
+    #[test]
+    fn cleanup_counts_calendar_days_not_files() {
+        let d = tempfile::tempdir().unwrap();
+        for day in ["2026-10-10", "2026-11-04", "2026-12-01"] {
+            std::fs::write(d.path().join(format!("{day}.jsonl")), "{}\n").unwrap();
+        }
+        let removed = cleanup(d.path(), "2026-11-05", &LogSettings { keep_days: 14, ..Default::default() });
+        assert_eq!(removed, vec!["2026-10-10"]);
+        assert_eq!(days(d.path()).iter().map(|x| x.day.as_str()).collect::<Vec<_>>(), vec!["2026-12-01", "2026-11-04"]);
+    }
+
+    #[test]
+    fn day_numbers_invert_civil_dates() {
+        for n in [0i64, 59, 60, 365, 10_957, 20_407, 20_772] {
+            assert_eq!(day_number(&civil(n)), Some(n), "{}", civil(n));
+        }
+        assert_eq!(day_number("2026-11-05").unwrap() - day_number("2026-10-22").unwrap(), 14);
+        assert_eq!(day_number("2026-13-01"), None);
+        assert_eq!(day_number("nonsense"), None);
     }
 }

@@ -45,7 +45,8 @@ pub struct State {
     pub power: Option<Value>,
     pub error: Option<String>,
     pub history: VecDeque<Point>,
-    pub announced: Vec<String>,
+    /// Alert texts already shown, with when (ms since start).
+    pub announced: Vec<(String, u64)>,
     pub updated: Option<Instant>,
 }
 
@@ -96,7 +97,8 @@ fn now_epoch_ms() -> u64 {
 }
 
 /// Runs forever on its own thread. `demo` is read each tick (the person can switch it on and off).
-pub fn run(state: Shared, demo: Arc<Mutex<bool>>, on_alert: impl Fn(String) + Send + 'static) {
+/// `on_reading` sees every tick's source, time (ms since start) and snapshot, after the state is updated.
+pub fn run(state: Shared, demo: Arc<Mutex<bool>>, on_alert: impl Fn(String) + Send + 'static, on_reading: impl Fn(Source, u64, &Value) + Send + 'static) {
     use wiregent_hw::reader::Reader;
     let start = Instant::now();
     let mut direct: Option<Reader<Box<dyn wiregent_hw::Firmware>>> = None;
@@ -140,6 +142,7 @@ pub fn run(state: Shared, demo: Arc<Mutex<bool>>, on_alert: impl Fn(String) + Se
         let (top, ram_gb, cpu_pct) = sampler.sample(&win.gpu_by_pid, last_tick.elapsed().as_secs_f64());
         last_tick = Instant::now();
         let mut alerts = Vec::new();
+        let snapshot_for_rules = snapshot.clone();
         {
             let mut st = state.lock().unwrap();
             let s = snapshot.clone().unwrap_or(Value::Null);
@@ -162,8 +165,7 @@ pub fn run(state: Shared, demo: Arc<Mutex<bool>>, on_alert: impl Fn(String) + Se
             }
             for a in s["alerts"].as_array().into_iter().flatten() {
                 let text = alert_text(a);
-                if source != Source::Demo && !st.announced.contains(&text) {
-                    st.announced.push(text.clone());
+                if should_announce(&mut st.announced, source, &text, t) {
                     alerts.push(text);
                 }
             }
@@ -179,9 +181,29 @@ pub fn run(state: Shared, demo: Arc<Mutex<bool>>, on_alert: impl Fn(String) + Se
         for a in alerts {
             on_alert(a);
         }
+        if let Some(s) = &snapshot_for_rules {
+            on_reading(source, t, s);
+        }
         let hot = state.lock().unwrap().history.back().and_then(|p| p.cpu_c).unwrap_or(0) >= 80;
         std::thread::sleep(Duration::from_millis(if hot { 700 } else { 1_600 }));
     }
+}
+
+/// The same alert again within this long is the same episode (the service's snapshot can repeat one).
+pub const REANNOUNCE_MS: u64 = 10 * 60_000;
+
+/// Whether to show this alert: never for demo data, and not twice within [`REANNOUNCE_MS`]. A later episode
+/// of the same fault is shown again (it used to stay silent for the rest of the session).
+pub fn should_announce(announced: &mut Vec<(String, u64)>, source: Source, text: &str, t_ms: u64) -> bool {
+    if source == Source::Demo {
+        return false;
+    }
+    announced.retain(|(_, at)| t_ms.saturating_sub(*at) < REANNOUNCE_MS);
+    if announced.iter().any(|(x, _)| x == text) {
+        return false;
+    }
+    announced.push((text.to_string(), t_ms));
+    true
 }
 
 /// The person-facing text of a reader alert.
@@ -189,6 +211,7 @@ pub fn alert_text(a: &Value) -> String {
     match a["kind"].as_str() {
         Some("fan-fault") => format!("Fan 0x{:02X} stood still while its sensor was hot and its partner spun: likely a fan fault.", a["fan"].as_u64().unwrap_or(0)),
         Some("stuck-reading") => format!("Fan 0x{:02X} reports a speed that never changes ({} RPM): its reading isn't a real measurement.", a["fan"].as_u64().unwrap_or(0), a["rpm"].as_u64().unwrap_or(0)),
+        Some("zone-stopped") => format!("Every {} fan reads 0 RPM while it is hot: nothing is cooling it. Ease the load and have the fans checked.", if a["sensor"].as_u64() == Some(6) { "GPU" } else { "CPU" }),
         Some("sensor-stale") => format!("No valid {} temperature for 30 s or more.", a["name"].as_str().unwrap_or("sensor")),
         _ => a.to_string(),
     }
@@ -199,9 +222,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn alerts_show_once_per_episode_and_never_for_demo_data() {
+        let mut seen = Vec::new();
+        assert!(!should_announce(&mut seen, Source::Demo, "a", 0), "demo data never alerts");
+        assert!(should_announce(&mut seen, Source::Direct, "a", 0));
+        assert!(!should_announce(&mut seen, Source::Service, "a", 1_000), "the same episode");
+        assert!(should_announce(&mut seen, Source::Direct, "b", 2_000), "a different alert");
+        assert!(!should_announce(&mut seen, Source::Direct, "a", REANNOUNCE_MS - 1));
+        assert!(should_announce(&mut seen, Source::Direct, "a", REANNOUNCE_MS), "a later episode is shown again");
+    }
+
+    #[test]
     fn alert_texts_match_the_reader_alerts() {
         assert!(alert_text(&json!({ "kind": "fan-fault", "fan": 59 })).contains("0x3B"));
         assert!(alert_text(&json!({ "kind": "stuck-reading", "fan": 60, "rpm": 3000 })).contains("3000 RPM"));
         assert!(alert_text(&json!({ "kind": "sensor-stale", "name": "CPU" })).contains("CPU"));
+        assert!(alert_text(&json!({ "kind": "zone-stopped", "sensor": 1, "fans": [50, 59] })).starts_with("Every CPU fan reads 0 RPM"));
     }
 }

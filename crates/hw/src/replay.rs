@@ -6,13 +6,14 @@ use crate::control::FirmwareWrite;
 use crate::Firmware;
 use anyhow::{anyhow, bail};
 use std::sync::{Arc, Mutex};
-use wiregent_oem_alienware::{parse_capture, Call, Method, OP_ACTIVATE_PROFILE, OP_CURRENT_PROFILE, OP_FAN_BOOST, OP_SET_FAN_BOOST, REFERENCE_CAPTURE};
+use wiregent_oem_alienware::{parse_capture, Call, Method, OP_ACTIVATE_PROFILE, OP_CURRENT_PROFILE, OP_FAN_BOOST, OP_FAN_RPM, OP_SET_FAN_BOOST, REFERENCE_CAPTURE};
 
 #[derive(Clone, Default)]
 struct Live {
     failing: Vec<u8>,
     profile: Option<u32>,
     boost: std::collections::BTreeMap<u8, u32>,
+    rpm: std::collections::BTreeMap<u8, u32>,
     writes: Vec<u32>,
     ignore_writes: bool,
 }
@@ -43,6 +44,11 @@ impl Replay {
         self.live.lock().unwrap().ignore_writes = true;
     }
 
+    /// From now on, this fan reads `rpm` (tests: a fan that stopped, or started).
+    pub fn set_rpm(&self, fan: u8, rpm: u32) {
+        self.live.lock().unwrap().rpm.insert(fan, rpm);
+    }
+
     /// Packed values of every write so far.
     pub fn writes(&self) -> Vec<u32> {
         self.live.lock().unwrap().writes.clone()
@@ -61,6 +67,11 @@ impl Firmware for Replay {
         if c.method == Method::ThermalInformation && c.op == OP_CURRENT_PROFILE {
             if let Some(p) = live.profile {
                 return Ok(p);
+            }
+        }
+        if c.method == Method::ThermalInformation && c.op == OP_FAN_RPM {
+            if let Some(r) = live.rpm.get(&c.arg1) {
+                return Ok(*r);
             }
         }
         if c.method == Method::ThermalInformation && c.op == OP_FAN_BOOST {

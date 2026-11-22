@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { api, hex, PROFILE_NAMES, sensorName, type Alert, type BoostChange, type Controls, type Drift, type Fan, type Health, type LightDevice, type LogDay, type ModeChange, type Point, type Proc, type Settings, type Status } from './api';
+import { api, hex, PROFILE_NAMES, sensorName, type BoostChange, type Controls, type Drift, type Fan, type Health, type LightDevice, type LogDay, type ModeChange, type Point, type Proc, type Settings, type Status } from './api';
 import { Chart, CurveEditor, FanRotor, Gauge, LoadChart, LockedWhy, ModeDock, Section, Tip, type LoadSeries } from './components';
 import { Duty, FanResponse, SpeedAndTemp } from './fangraphs';
+import { alertText, fanFlag, stuckFans, verdict, zoneName } from './logic';
 
 /** Power and what it powers, on one time axis: each on its own scale. */
 function loadSeries(h: Point[]): LoadSeries[] {
@@ -16,25 +17,7 @@ function loadSeries(h: Point[]): LoadSeries[] {
 
 const COL = { cpu: 'var(--hue-red-mark)', gpu: 'var(--hue-purple-mark)', power: 'var(--hue-amber-mark)', ram: 'var(--hue-sage-mark)', fans: ['var(--ink)', 'var(--hue-purple-mark)', 'var(--hue-red-mark)', 'var(--hue-sage-mark)'] };
 
-function alertText(a: Alert) {
-  if (a.kind === 'fan-fault') return `Fan ${hex(a.fan ?? 0)} stood still while its sensor was hot and its partner spun: likely a fan fault.`;
-  if (a.kind === 'stuck-reading') return `Fan ${hex(a.fan ?? 0)} reports a speed that never changes (${a.rpm} RPM): its reading isn't a real measurement.`;
-  if (a.kind === 'sensor-stale') return `No valid ${a.name} temperature for 30 s or more.`;
-  return a.kind;
-}
-
 const sensorC = (s: Status | null, name: string) => s?.snapshot?.sensors.find((x) => x.name === name)?.celsius ?? null;
-
-/** One plain sentence about the state of the machine, worst first. */
-function verdict(status: Status | null): { tone: 'hot' | 'warm' | 'ok' | 'muted'; text: string } {
-  const cpu = sensorC(status, 'CPU');
-  const w = status?.power?.cpuPackageW ?? null;
-  if (!status?.snapshot) return { tone: 'muted', text: 'No live firmware readings yet. Windows-side numbers are below.' };
-  if (cpu != null && w != null && cpu >= 95 && w <= 35) return { tone: 'hot', text: `Running hot for the load: ${cpu} °C at only ${w.toFixed(0)} W points to cooling (a fan, clogged fins or dried paste).` };
-  if (status.snapshot.alerts.length) return { tone: 'warm', text: alertText(status.snapshot.alerts[0]) };
-  if (cpu != null && cpu >= 90) return { tone: 'warm', text: `Working hard: CPU at ${cpu} °C.` };
-  return { tone: 'ok', text: 'All normal.' };
-}
 
 /** Mode switching shared by Overview and Performance: one request at a time, result shown in plain words. */
 export function useModes(status: Status | null, controls: Controls | null) {
@@ -86,11 +69,7 @@ function Moment({ p, live }: { p: Point | null; live: boolean }) {
   );
 }
 
-/** AWCC's names for the fans: CPU zone 1, CPU zone 2, GPU zone 1… numbered per sensor in id order. */
-export function zoneName(fans: Fan[], f: Fan): string {
-  const same = fans.filter((x) => x.sensor === f.sensor).map((x) => x.id).sort((a, b) => a - b);
-  return `${sensorName(f.sensor)} zone ${same.indexOf(f.id) + 1}`;
-}
+export { zoneName };
 
 /** Windows Energy Saver caps CPU power whatever the thermal mode says; AWCC greys its modes out then. */
 function EnergySaverNote({ status }: { status: Status | null }) {
@@ -105,6 +84,7 @@ export function Overview({ status, history, controls }: { status: Status | null;
   const gpu = sensorC(status, 'GPU');
   const w = status?.power?.cpuPackageW ?? null;
   const v = verdict(status);
+  const stuck = stuckFans(history, s?.fans ?? []);
   const m = useModes(status, controls);
   const [hover, setHover] = useState<number | null>(null);
   const shown = hover != null ? history[hover] : history[history.length - 1] ?? null;
@@ -124,6 +104,7 @@ export function Overview({ status, history, controls }: { status: Status | null;
         <Gauge label="GPU" value={gpu} sub={<Tip text="The busiest GPU engine right now, from Windows' counters."><span className="mono">{gpuNow != null ? `${gpuNow}% busy` : '—'}</span></Tip>} tip="GPU temperature from the Alienware firmware sensor the GPU fans follow." />
       </div>
       <EnergySaverNote status={status} />
+      {controls?.emergency?.active && <div className="note warn span3">Emergency fan rule: every fan is at full until the laptop cools to {controls.emergency.releaseC} °C. Fan changes wait until then.</div>}
       {s?.alerts.map((a, i) => <div key={i} className="note warn">{alertText(a)}</div>)}
       <Section title="Temperature · hover for any moment" className="span2">
         <Chart points={history} min={30} max={105} hover={hover} onHover={setHover} series={[{ name: 'CPU', color: COL.cpu, unit: '°', values: history.map((p) => p.cpu_c) }, { name: 'GPU', color: COL.gpu, unit: '°', values: history.map((p) => p.gpu_c) }]} />
@@ -132,7 +113,7 @@ export function Overview({ status, history, controls }: { status: Status | null;
       <Section title="Fans · live">
         <div className="rotors">
           {(s?.fans ?? []).map((f) => (
-            <FanRotor key={f.id} rpm={f.rpm} max={f.max_rpm} label={zoneName(s?.fans ?? [], f)} id={hex(f.id)} flag={f.rpm === 0 && (cpu ?? 0) >= 80 ? 'stopped' : f.id === 0x3c && f.rpm != null && f.rpm % 1000 === 0 ? 'fixed' : undefined} note={f.rpm === 0 ? `${hex(f.id)} reads 0 RPM while the ${sensorName(f.sensor)} is hot. Check this fan by eye and ear.` : undefined} />
+            <FanRotor key={f.id} rpm={f.rpm} max={f.max_rpm} label={zoneName(s?.fans ?? [], f)} id={hex(f.id)} {...(s ? fanFlag(f, s, stuck) : {})} />
           ))}
           {!s && <p className="muted">No fan readings without the hardware service.</p>}
         </div>

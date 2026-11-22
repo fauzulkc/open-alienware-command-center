@@ -81,6 +81,70 @@ impl FanPairWatch {
     }
 }
 
+// ---------------------------------------------------------------- every fan on a hot sensor stopped
+
+/// Every fan that cools a sensor read 0 RPM while that sensor was hot. The fan-pair rule can't see this (it
+/// needs a spinning partner), and it's the worse case: nothing is moving air over that heatsink. Seen on the
+/// owner's x17 R2 from 2026-11-13: both CPU fans at 0 RPM with the CPU at 100 °C in every mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneStopped {
+    pub sensor: u8,
+    pub fans: Vec<u8>,
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub peak_c: i32,
+}
+
+/// Fires once per episode when every fan on a sensor has read 0 RPM for `window_ms` while the sensor read
+/// above `hot_c`. A fan without a reading this sample breaks the episode (it might be spinning).
+#[derive(Debug, Clone)]
+pub struct ZoneStoppedWatch {
+    pub window_ms: u64,
+    pub hot_c: i32,
+    open: BTreeMap<u8, (u64, i32, bool)>, // sensor -> (since, peak, already reported)
+}
+
+impl Default for ZoneStoppedWatch {
+    fn default() -> Self {
+        ZoneStoppedWatch { window_ms: 30_000, hot_c: 80, open: BTreeMap::new() }
+    }
+}
+
+impl ZoneStoppedWatch {
+    pub fn push(&mut self, d: &Discovery, s: &Sample) -> Vec<ZoneStopped> {
+        let mut zones: BTreeMap<u8, Vec<u8>> = BTreeMap::new();
+        for &fan in &d.fans {
+            if let Some(&sensor) = d.fan_sensor.get(&fan) {
+                zones.entry(sensor).or_default().push(fan);
+            }
+        }
+        let mut fired = Vec::new();
+        for (sensor, fans) in zones {
+            let temp = s.temps.get(&sensor).copied();
+            let all_stopped = fans.iter().all(|f| s.rpm.get(f) == Some(&0));
+            match temp {
+                Some(t) if t > self.hot_c && all_stopped => {
+                    let e = self.open.entry(sensor).or_insert((s.t_ms, t, false));
+                    e.1 = e.1.max(t);
+                    if !e.2 && s.t_ms.saturating_sub(e.0) >= self.window_ms {
+                        e.2 = true;
+                        fired.push(ZoneStopped { sensor, fans: fans.clone(), from_ms: e.0, to_ms: s.t_ms, peak_c: e.1 });
+                    }
+                }
+                _ => {
+                    self.open.remove(&sensor);
+                }
+            }
+        }
+        fired
+    }
+
+    pub fn scan(d: &Discovery, samples: &[Sample]) -> Vec<ZoneStopped> {
+        let mut w = ZoneStoppedWatch::default();
+        samples.iter().flat_map(|s| w.push(d, s)).collect()
+    }
+}
+
 // ---------------------------------------------------------------- stuck speed reading (review 2026-11-09)
 
 /// A fan whose reported speed doesn't move while its partner on the same sensor does: the value is a setpoint
@@ -196,7 +260,7 @@ impl EmergencyRule {
         if !self.active {
             if hottest >= self.trigger_c {
                 let since = *self.hot_since.get_or_insert(t_ms);
-                if t_ms - since >= self.hold_ms {
+                if t_ms.saturating_sub(since) >= self.hold_ms {
                     self.active = true;
                     self.hot_since = None;
                     self.cool_since = None;
@@ -207,7 +271,7 @@ impl EmergencyRule {
             }
         } else if hottest <= self.release_c {
             let since = *self.cool_since.get_or_insert(t_ms);
-            if t_ms - since >= self.release_ms {
+            if t_ms.saturating_sub(since) >= self.release_ms {
                 self.active = false;
                 self.cool_since = None;
                 return Some(Emergency::Release);
@@ -356,8 +420,55 @@ mod tests {
         assert!(FanPairWatch::scan(&x17(), &f3s()).is_empty());
         let cool: Vec<Sample> = f2().into_iter().map(|mut s| { s.temps.insert(0x01, 60); s }).collect();
         assert!(FanPairWatch::scan(&x17(), &cool).is_empty());
-        let both_idle: Vec<Sample> = f2().into_iter().map(|mut s| { s.rpm.insert(0x32, 0); s }).collect();
-        assert!(FanPairWatch::scan(&x17(), &both_idle).is_empty(), "both fans stopped is idle, not a one-fan fault");
+        let both_stopped: Vec<Sample> = f2().into_iter().map(|mut s| { s.rpm.insert(0x32, 0); s }).collect();
+        assert!(FanPairWatch::scan(&x17(), &both_stopped).is_empty(), "both fans stopped is the zone rule's case, not a one-fan fault");
+    }
+
+    /// Both CPU fans at 0 RPM on the hot trace: one alert, on the CPU sensor, naming both fans, 30 s in.
+    #[test]
+    fn every_fan_on_a_hot_sensor_stopped_fires_once() {
+        let both_stopped: Vec<Sample> = f2().into_iter().map(|mut s| { s.rpm.insert(0x32, 0); s }).collect();
+        let z = ZoneStoppedWatch::scan(&x17(), &both_stopped);
+        assert_eq!(z.len(), 1, "{z:?}");
+        assert_eq!((z[0].sensor, z[0].fans.clone()), (0x01, vec![0x32, 0x3B]));
+        assert!((30_000..=33_000).contains(&(z[0].to_ms - z[0].from_ms)), "{}", z[0].to_ms - z[0].from_ms);
+        assert!(z[0].peak_c >= 99);
+    }
+
+    /// Silent when a fan on the sensor spins (F2 itself: 0x32 at 4600), when it's cool, and for the GPU fans
+    /// idling at 0 RPM on a cool GPU. 80 °C is still cool; 81 is hot.
+    #[test]
+    fn the_zone_rule_is_silent_when_it_should_be() {
+        let d = x17();
+        assert!(ZoneStoppedWatch::scan(&d, &f2()).is_empty(), "one CPU fan spins");
+        let at = |c: i32| -> Vec<Sample> { f2().into_iter().map(|mut s| { s.rpm.insert(0x32, 0); s.temps.insert(0x01, c); s }).collect() };
+        assert!(ZoneStoppedWatch::scan(&d, &at(80)).is_empty());
+        assert_eq!(ZoneStoppedWatch::scan(&d, &at(81)).len(), 1);
+        let gpu_idle: Vec<Sample> = f3s().into_iter().map(|mut s| { s.rpm.insert(0x33, 0); s.rpm.insert(0x3C, 0); s.temps.insert(0x06, 55); s }).collect();
+        assert!(ZoneStoppedWatch::scan(&d, &gpu_idle).is_empty(), "GPU fans off on a cool GPU is normal");
+    }
+
+    /// A missing reading breaks the episode (that fan may be spinning); a dip in temperature does too.
+    #[test]
+    fn the_zone_rule_restarts_after_a_break() {
+        let d = x17();
+        let mut w = ZoneStoppedWatch::default();
+        let s = |t: u64, c: i32, rpm: Option<u32>| {
+            let mut x = Sample { t_ms: t, temps: BTreeMap::from([(0x01, c), (0x06, 60)]), rpm: BTreeMap::from([(0x32, 0), (0x33, 1000), (0x3C, 2000)]) };
+            if let Some(r) = rpm {
+                x.rpm.insert(0x3B, r);
+            }
+            x
+        };
+        assert!(w.push(&d, &s(0, 95, Some(0))).is_empty());
+        assert!(w.push(&d, &s(20_000, 95, None)).is_empty(), "0x3B unread: not proven stopped");
+        assert!(w.push(&d, &s(29_000, 95, Some(0))).is_empty());
+        assert!(w.push(&d, &s(50_000, 95, Some(0))).is_empty(), "only 21 s since the break");
+        assert_eq!(w.push(&d, &s(59_000, 95, Some(0))).len(), 1);
+        assert!(w.push(&d, &s(90_000, 95, Some(0))).is_empty(), "once per episode");
+        assert!(w.push(&d, &s(91_000, 70, Some(0))).is_empty());
+        assert!(w.push(&d, &s(92_000, 95, Some(0))).is_empty());
+        assert_eq!(w.push(&d, &s(122_000, 95, Some(0))).len(), 1, "a new episode after cooling down");
     }
 
     /// Fan 0x3C's exact 3000 RPM in the fault trace is flagged as a reading that doesn't move.

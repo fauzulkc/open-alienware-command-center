@@ -168,10 +168,80 @@ pub fn reset_fans<F: FirmwareWrite + ?Sized>(fw: &F, d: &Discovery) -> Vec<Strin
     errors
 }
 
+/// The boost the emergency rule sets on every fan: the highest this laptop has been checked at. The rule's
+/// first draft said 255, but values above 100 are uncalibrated "overboost" (see [`MAX_BOOST`]).
+pub const EMERGENCY_BOOST: u8 = MAX_BOOST;
+
+/// Carries out an emergency rule decision. Engage: every reported fan to [`EMERGENCY_BOOST`], whatever the
+/// person picked. Release: each fan back to the person's own boost (0, the firmware's curve, for fans they
+/// never raised). Never rate-limited (a person's five quick clicks must not hold back cooling), but still
+/// gated on the verified machine: on firmware nobody checked, the rule only alerts. Errors are collected,
+/// not raised, so one bad fan doesn't stop the others.
+pub fn apply_emergency<F: FirmwareWrite + ?Sized>(fw: &F, d: &Discovery, e: wiregent_oem_alienware::rules::Emergency, person: &std::collections::BTreeMap<u8, u8>, machine_ok: bool) -> Vec<String> {
+    use wiregent_oem_alienware::rules::Emergency;
+    if !machine_ok {
+        return vec!["this laptop's model or BIOS isn't verified, so the emergency rule can only warn".into()];
+    }
+    let mut errors = Vec::new();
+    for &fan in &d.fans {
+        let level = match e {
+            Emergency::Engage => EMERGENCY_BOOST,
+            Emergency::Release => person.get(&fan).copied().unwrap_or(0).min(MAX_BOOST),
+        };
+        if fw.read(read_fan_boost(fan)).ok() == Some(level as u32) {
+            continue;
+        }
+        match d.write(Write::FanBoost { fan, level }, false) {
+            Ok(c) => {
+                if let Err(err) = fw.write(c) {
+                    errors.push(format!("0x{fan:02X}: {err:#}"));
+                }
+            }
+            Err(err) => errors.push(format!("0x{fan:02X}: {err}")),
+        }
+    }
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::replay::Replay;
+    use wiregent_oem_alienware::rules::Emergency;
+
+    /// C-07/C-08: engaging sets every fan to full, even right after the person used up the rate limit.
+    #[test]
+    fn emergency_engage_boosts_every_fan_past_the_rate_limit() {
+        let (fw, d) = x17();
+        let mut limit = RateLimit::default();
+        for i in 0..5 {
+            set_fan_boost(&fw, &d, 0x33, 10 + i as u8, true, &mut limit, i, &|_| {}).unwrap();
+        }
+        assert!(!limit.try_write(6, false), "the person's budget for this second is spent");
+        assert!(apply_emergency(&fw, &d, Emergency::Engage, &Default::default(), true).is_empty());
+        for fan in [0x32u8, 0x33, 0x3B, 0x3C] {
+            assert_eq!(fw.read(read_fan_boost(fan)).unwrap(), EMERGENCY_BOOST as u32, "fan 0x{fan:02X}");
+        }
+    }
+
+    /// C-09: release hands each fan back to what the person picked, and the rest to the firmware's curve.
+    #[test]
+    fn emergency_release_restores_the_persons_boost() {
+        let (fw, d) = x17();
+        apply_emergency(&fw, &d, Emergency::Engage, &Default::default(), true);
+        let person = std::collections::BTreeMap::from([(0x33u8, 60u8)]);
+        assert!(apply_emergency(&fw, &d, Emergency::Release, &person, true).is_empty());
+        let got: Vec<u32> = [0x32u8, 0x33, 0x3B, 0x3C].iter().map(|f| fw.read(read_fan_boost(*f)).unwrap()).collect();
+        assert_eq!(got, vec![0, 60, 0, 0]);
+    }
+
+    /// On an unverified machine the rule warns and writes nothing.
+    #[test]
+    fn emergency_on_an_unverified_machine_writes_nothing() {
+        let (fw, d) = x17();
+        assert_eq!(apply_emergency(&fw, &d, Emergency::Engage, &Default::default(), false).len(), 1);
+        assert!(fw.writes().is_empty());
+    }
 
     #[test]
     fn fan_boost_is_written_read_back_and_reset() {
@@ -239,6 +309,65 @@ mod tests {
             set_profile(&fw, &d, *p, true, &mut limit, i as u64, &|_| {}).unwrap();
         }
         assert!(set_profile(&fw, &d, 0xA0, true, &mut limit, 6, &|_| {}).is_err(), "a sixth change within a second");
+        assert_eq!(fw.writes().len(), 5, "the refused sixth never reached the firmware");
+    }
+
+    /// Every refusal happens before the firmware sees anything: the count of writes doesn't move.
+    #[test]
+    fn fan_boost_gates_refuse_before_any_write() {
+        let (fw, d) = x17();
+        let mut limit = RateLimit::default();
+        assert!(set_fan_boost(&fw, &d, 0x32, 50, false, &mut limit, 0, &|_| {}).is_err(), "unverified machine");
+        assert!(set_fan_boost(&fw, &d, 0x32, MAX_BOOST + 1, true, &mut limit, 0, &|_| {}).is_err(), "overboost");
+        assert!(set_fan_boost(&fw, &d, 0x3D, 50, true, &mut limit, 0, &|_| {}).is_err(), "a fan this firmware didn't report");
+        assert!(fw.writes().is_empty(), "{:X?}", fw.writes());
+    }
+
+    /// C-11 for fans: the sixth boost within a second is refused and never reaches the firmware.
+    #[test]
+    fn fan_boost_rate_limit_refuses_the_sixth_and_writes_nothing() {
+        let (fw, d) = x17();
+        let mut limit = RateLimit::default();
+        for (i, level) in [10u8, 20, 30, 40, 50].iter().enumerate() {
+            set_fan_boost(&fw, &d, 0x33, *level, true, &mut limit, i as u64, &|_| {}).unwrap();
+        }
+        assert!(set_fan_boost(&fw, &d, 0x33, 60, true, &mut limit, 6, &|_| {}).is_err());
+        assert_eq!(fw.writes().len(), 5);
+        assert!(set_fan_boost(&fw, &d, 0x33, 60, true, &mut limit, 1_010, &|_| {}).is_ok(), "a second later");
+    }
+
+    #[test]
+    fn a_boost_the_firmware_ignores_is_reported_unconfirmed() {
+        let (fw, d) = x17();
+        fw.ignore_writes();
+        let r = set_fan_boost(&fw, &d, 0x33, 60, true, &mut RateLimit::default(), 0, &|_| {}).unwrap();
+        assert!(!r.confirmed);
+        assert_eq!(r.after, Some(0));
+        assert_eq!(fw.writes().len(), 1);
+    }
+
+    /// An unreadable model or BIOS (WMI failed: "") or a near miss is not the verified machine.
+    #[test]
+    fn the_machine_gate_refuses_empty_and_partial() {
+        for (m, b) in [("", ""), ("Alienware x17 R2", ""), ("", "1.32.0"), ("Alienware x17 R2", "1.32"), ("Alienware x17 R2", "1.32.0.1"), ("Alienware x17", "1.32.0"), ("Alienware x17 R2 Special", "1.32.0")] {
+            assert!(!verified(m, b), "{m:?} {b:?}");
+        }
+        assert!(verified(" alienware X17 r2 ", " 1.32.0 "), "spacing and case from WMI don't matter");
+    }
+
+    /// The reset puts every boosted fan back, not just the first one it finds.
+    #[test]
+    fn reset_fans_resets_every_boosted_fan() {
+        let (fw, d) = x17();
+        let mut limit = RateLimit::default();
+        for (i, fan) in [0x32u8, 0x33, 0x3C].iter().enumerate() {
+            set_fan_boost(&fw, &d, *fan, 70, true, &mut limit, i as u64, &|_| {}).unwrap();
+        }
+        assert!(reset_fans(&fw, &d).is_empty());
+        for fan in [0x32u8, 0x33, 0x3B, 0x3C] {
+            assert_eq!(fw.read(read_fan_boost(fan)).unwrap(), 0, "fan 0x{fan:02X}");
+        }
+        assert_eq!(fw.writes().len(), 6, "three raises, three resets; the fan never raised isn't written");
     }
 
     #[test]
