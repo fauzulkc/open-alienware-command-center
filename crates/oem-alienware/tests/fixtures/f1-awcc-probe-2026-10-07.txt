@@ -1,0 +1,62 @@
+# AWCC read-only probe: Invoke-CimMethod root\wmi AWCCWmiMethodFunction <Thermal_Information|GetFanSensors> -Arguments @{arg2 = op | (arg1 << 8) [| (arg2 << 16)]}
+# Collected: 2026-10-07T21:58:49.2262686+06:00
+# Elevated: True
+Instance: ACPI\PNP0C14\AWCC_0 Active=True
+
+== 0x02 system description
+Thermal_Information  op=0x02 arg1=0x00 arg2=0x00 packed=0x00000002 -> argr=0x06000204 (100663812)
+decoded: fans=4 sensors=2 unknown=0 profiles=6  (byte0..byte3)
+
+== 0x03 resource IDs (index 0..11)
+Thermal_Information  op=0x03 arg1=0x00 arg2=0x00 packed=0x00000003 -> argr=0x00000032 (50)   [fan id 0x32; upper bytes 0x000000]
+Thermal_Information  op=0x03 arg1=0x01 arg2=0x00 packed=0x00000103 -> argr=0x00000033 (51)   [fan id 0x33; upper bytes 0x000000]
+Thermal_Information  op=0x03 arg1=0x02 arg2=0x00 packed=0x00000203 -> argr=0x0000003B (59)   [fan id 0x3B; upper bytes 0x000000]
+Thermal_Information  op=0x03 arg1=0x03 arg2=0x00 packed=0x00000303 -> argr=0x0000003C (60)   [fan id 0x3C; upper bytes 0x000000]
+Thermal_Information  op=0x03 arg1=0x04 arg2=0x00 packed=0x00000403 -> argr=0x00000101 (257)   [sensor id 0x01; upper bytes 0x000001]
+Thermal_Information  op=0x03 arg1=0x05 arg2=0x00 packed=0x00000503 -> argr=0x00000106 (262)   [sensor id 0x06; upper bytes 0x000001]
+Thermal_Information  op=0x03 arg1=0x06 arg2=0x00 packed=0x00000603 -> argr=0x000000A3 (163)   [profile id 0xA3 = USTT quiet; upper bytes 0x000000]
+Thermal_Information  op=0x03 arg1=0x07 arg2=0x00 packed=0x00000703 -> argr=0x000000A0 (160)   [profile id 0xA0 = USTT balanced; upper bytes 0x000000]
+Thermal_Information  op=0x03 arg1=0x08 arg2=0x00 packed=0x00000803 -> argr=0x000000A1 (161)   [profile id 0xA1 = USTT balanced-performance; upper bytes 0x000000]
+Thermal_Information  op=0x03 arg1=0x09 arg2=0x00 packed=0x00000903 -> argr=0x000000A4 (164)   [profile id 0xA4 = USTT performance; upper bytes 0x000000]
+Thermal_Information  op=0x03 arg1=0x0A arg2=0x00 packed=0x00000A03 -> argr=0x000000A5 (165)   [profile id 0xA5 = USTT low-power; upper bytes 0x000000]
+Thermal_Information  op=0x03 arg1=0x0B arg2=0x00 packed=0x00000B03 -> argr=0x000000AB (171)   [profile id 0xAB = G-Mode; upper bytes 0x000000]
+fan IDs: 0x32, 0x33, 0x3B, 0x3C
+sensor IDs: 0x01, 0x06
+unknown IDs: 
+profile IDs: 0xA3 (USTT quiet), 0xA0 (USTT balanced), 0xA1 (USTT balanced-performance), 0xA4 (USTT performance), 0xA5 (USTT low-power), 0xAB (G-Mode)
+
+== 0x0B current thermal profile
+Thermal_Information  op=0x0B arg1=0x00 arg2=0x00 packed=0x0000000B -> argr=0x000000AB (171)
+current profile: 0xAB (G-Mode)
+
+== 0x04 temperatures (per sensor ID, deg C)
+Thermal_Information  op=0x04 arg1=0x01 arg2=0x00 packed=0x00000104 -> argr=0x00000064 (100)
+Thermal_Information  op=0x04 arg1=0x06 arg2=0x00 packed=0x00000604 -> argr=0x0000003F (63)
+
+== 0x05 fan RPM / 0x08 min RPM / 0x09 max RPM / 0x0C fan boost (per fan ID)
+Thermal_Information  op=0x05 arg1=0x32 arg2=0x00 packed=0x00003205 -> argr=0x000011F8 (4600)
+Thermal_Information  op=0x08 arg1=0x32 arg2=0x00 packed=0x00003208 -> argr=0x00000000 (0)
+Thermal_Information  op=0x09 arg1=0x32 arg2=0x00 packed=0x00003209 -> argr=0x00001068 (4200)
+Thermal_Information  op=0x0C arg1=0x32 arg2=0x00 packed=0x0000320C -> argr=0x00000000 (0)
+Thermal_Information  op=0x05 arg1=0x33 arg2=0x00 packed=0x00003305 -> argr=0x00000320 (800)
+Thermal_Information  op=0x08 arg1=0x33 arg2=0x00 packed=0x00003308 -> argr=0x00000000 (0)
+Thermal_Information  op=0x09 arg1=0x33 arg2=0x00 packed=0x00003309 -> argr=0x00001004 (4100)
+Thermal_Information  op=0x0C arg1=0x33 arg2=0x00 packed=0x0000330C -> argr=0x00000000 (0)
+Thermal_Information  op=0x05 arg1=0x3B arg2=0x00 packed=0x00003B05 -> argr=0x00000000 (0)
+Thermal_Information  op=0x08 arg1=0x3B arg2=0x00 packed=0x00003B08 -> argr=0x00000000 (0)
+Thermal_Information  op=0x09 arg1=0x3B arg2=0x00 packed=0x00003B09 -> argr=0x00000BB8 (3000)
+Thermal_Information  op=0x0C arg1=0x3B arg2=0x00 packed=0x00003B0C -> argr=0x00000000 (0)
+Thermal_Information  op=0x05 arg1=0x3C arg2=0x00 packed=0x00003C05 -> argr=0x00000BB8 (3000)
+Thermal_Information  op=0x08 arg1=0x3C arg2=0x00 packed=0x00003C08 -> argr=0x00000000 (0)
+Thermal_Information  op=0x09 arg1=0x3C arg2=0x00 packed=0x00003C09 -> argr=0x00000BB8 (3000)
+Thermal_Information  op=0x0C arg1=0x3C arg2=0x00 packed=0x00003C0C -> argr=0x00000000 (0)
+
+== GetFanSensors: op 0x01 = number of temp sensors tied to fan, op 0x02 = sensor ID at index (arg2)
+GetFanSensors        op=0x01 arg1=0x32 arg2=0x00 packed=0x00003201 -> argr=0x00000001 (1)
+GetFanSensors        op=0x02 arg1=0x32 arg2=0x00 packed=0x00003202 -> argr=0x00000001 (1)
+GetFanSensors        op=0x01 arg1=0x33 arg2=0x00 packed=0x00003301 -> argr=0x00000001 (1)
+GetFanSensors        op=0x02 arg1=0x33 arg2=0x00 packed=0x00003302 -> argr=0x00000006 (6)
+GetFanSensors        op=0x01 arg1=0x3B arg2=0x00 packed=0x00003B01 -> argr=0x00000001 (1)
+GetFanSensors        op=0x02 arg1=0x3B arg2=0x00 packed=0x00003B02 -> argr=0x00000001 (1)
+GetFanSensors        op=0x01 arg1=0x3C arg2=0x00 packed=0x00003C01 -> argr=0x00000001 (1)
+GetFanSensors        op=0x02 arg1=0x3C arg2=0x00 packed=0x00003C02 -> argr=0x00000006 (6)

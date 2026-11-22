@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Alien Cockpit OSS app icon: a cockpit visor on a dark rounded tile (its own mark, not Wiregent's or Dell's).
+       Flat colours only; depth comes from a crisp edge and a lit top lip, not gradients. -->
+  <rect x="32" y="32" width="960" height="960" rx="232" fill="#1b1d21"/>
+  <rect x="36" y="36" width="952" height="952" rx="228" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="8"/>
+  <path d="M256 592c0-166 115-288 256-288s256 122 256 288c0 51-42 80-90 67L512 618l-166 41c-48 13-90-16-90-67Z" fill="#e6e4de"/>
+  <path d="M358 525c42-29 96-45 154-45s112 16 154 45" fill="none" stroke="#5fb8a3" stroke-width="44" stroke-linecap="round"/>
+</svg>

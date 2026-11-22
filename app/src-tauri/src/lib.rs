@@ -1,0 +1,567 @@
+//! Alien Cockpit OSS: a standalone app for the Alienware x17 R2 that replaces AWCC and SupportAssist's everyday
+//! jobs (docs/plans/x17-standalone-app.md). It talks to the firmware through the hardware service, or
+//! directly when it runs as admin. Thermal modes can be switched (gated, confirmed by read-back); fan boost,
+//! curves and lighting writes stay locked, with the reason, until they pass their tests.
+
+mod boostkey;
+mod elevate;
+mod games;
+mod lighting;
+mod log;
+mod processes;
+mod source;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_notification::NotificationExt;
+
+/// The person's choices. Validated on every save; safety limits can only be tightened.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Settings {
+    /// Show the October capture when no live source is available (clearly labelled as demo data).
+    pub demo: bool,
+    /// The emergency fan rule's trigger, °C: 85..=98, never higher.
+    pub emergency_c: i32,
+    /// The mode to return to when G-Mode is toggled off (AWCC's behaviour), as "0xA0".
+    pub default_profile: String,
+    /// "awcc" (toggle G-Mode like AWCC), "cycle" (step through modes).
+    pub boost_key: String,
+    /// Per fan id ("0x32"): curve points [°C, boost %] for the custom profile.
+    pub fan_curves: std::collections::BTreeMap<String, Vec<[i32; 2]>>,
+    /// Per game id: the mode to switch to while it runs.
+    pub game_modes: std::collections::BTreeMap<String, String>,
+    pub notify: bool,
+    /// "dark" (default), "gray" or "light".
+    pub theme: String,
+    /// The daily log: how often, how long, how big.
+    pub log: log::LogSettings,
+    /// Look and feel: each can be turned off.
+    pub effects: Effects,
+    /// Without the hardware service, restart as administrator at start (one UAC prompt) for live readings.
+    pub live_admin: bool,
+}
+
+/// Interface effects, each on its own switch (Settings → Appearance).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Effects {
+    /// Retired 2026-11-09 (the owner asked for no pointer-driven movement); kept so old settings files load.
+    pub motion: bool,
+    /// A colour change on controls under the pointer; nothing moves or glows.
+    pub hover: bool,
+    /// A press and ripple when clicking.
+    pub press: bool,
+    /// Larger text throughout.
+    pub large_text: bool,
+}
+
+impl Default for Effects {
+    fn default() -> Self {
+        Effects { motion: false, hover: true, press: true, large_text: true }
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { demo: false, emergency_c: 98, default_profile: "0xA0".into(), boost_key: "awcc".into(), fan_curves: Default::default(), game_modes: Default::default(), notify: true, theme: "dark".into(), log: log::LogSettings::default(), effects: Effects::default(), live_admin: true }
+    }
+}
+
+pub const PROFILES: &[&str] = &["0xA3", "0xA0", "0xA1", "0xA4", "0xA5", "0xAB"];
+
+impl Settings {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(85..=98).contains(&self.emergency_c) {
+            return Err("the emergency trigger must be 85–98 °C".into());
+        }
+        if !PROFILES.contains(&self.default_profile.as_str()) || self.default_profile == "0xAB" {
+            return Err("the default mode must be one of Quiet, Balanced, Performance, Full Speed or Battery Saver".into());
+        }
+        if !["awcc", "cycle"].contains(&self.boost_key.as_str()) {
+            return Err("unknown boost-key behaviour".into());
+        }
+        for (fan, pts) in &self.fan_curves {
+            if !fan.starts_with("0x") || pts.len() < 2 || pts.len() > 8 {
+                return Err(format!("fan {fan}: a curve has 2–8 points"));
+            }
+            if pts.windows(2).any(|w| w[1][0] <= w[0][0]) || pts.iter().any(|p| !(20..=105).contains(&p[0]) || !(0..=100).contains(&p[1])) {
+                return Err(format!("fan {fan}: points must rise in temperature (20–105 °C) with boost 0–100 %"));
+            }
+        }
+        self.log.validate()?;
+        if !["dark", "gray", "light"].contains(&self.theme.as_str()) {
+            return Err("the theme must be dark, gray or light".into());
+        }
+        if self.game_modes.values().any(|m| !PROFILES.contains(&m.as_str())) {
+            return Err("a game is set to an unknown mode".into());
+        }
+        Ok(())
+    }
+
+    fn path() -> std::path::PathBuf {
+        dirs::config_dir().unwrap_or_default().join("Alien Cockpit OSS").join("settings.json")
+    }
+
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::path()).ok().and_then(|t| serde_json::from_str::<Settings>(&t).ok()).filter(|s| s.validate().is_ok()).unwrap_or_default()
+    }
+
+    fn save(&self) -> Result<(), String> {
+        let p = Self::path();
+        std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(&p, serde_json::to_vec_pretty(self).unwrap()).map_err(|e| e.to_string())
+    }
+}
+
+/// The last mode change, and the mode G-Mode was switched on from (the boost key goes back to it).
+#[derive(Default)]
+pub struct Modes {
+    previous: Option<u8>,
+    limit: wiregent_oem_alienware::rules::RateLimit,
+    last: Option<Value>,
+    started: Option<Instant>,
+    /// Fans this app raised, and to what (so it can put them back when it quits).
+    boosted: std::collections::BTreeMap<u8, u8>,
+}
+
+pub struct App {
+    readings: source::Shared,
+    modes: Arc<Mutex<Modes>>,
+    demo: Arc<Mutex<bool>>,
+    settings: Mutex<Settings>,
+    health: Mutex<Option<(Instant, Value)>>,
+    status_item: Mutex<Option<MenuItem<tauri::Wry>>>,
+}
+
+#[tauri::command]
+fn status(app: State<App>) -> Value {
+    let st = app.readings.lock().unwrap();
+    json!({ "source": st.source, "snapshot": st.snapshot, "lists": st.lists, "power": st.power, "error": st.error, "ageMs": st.updated.map(|u| u.elapsed().as_millis() as u64), "energySaver": energy_saver(), "elevated": elevate::is_elevated() })
+}
+
+/// Whether Windows Energy Saver (battery saver) is on: Windows then caps CPU power, so thermal modes
+/// change less than they say. AWCC greys its modes out while it's on; Alien Cockpit warns instead.
+/// None when Windows doesn't say.
+fn energy_saver() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        let mut s = windows::Win32::System::Power::SYSTEM_POWER_STATUS::default();
+        unsafe { windows::Win32::System::Power::GetSystemPowerStatus(&mut s) }.ok()?;
+        Some(s.SystemStatusFlag == 1)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Restarts Alien Cockpit as administrator for live readings; this copy exits once the new one is started.
+#[tauri::command]
+fn restart_elevated(app: AppHandle) -> Result<(), String> {
+    elevate::relaunch()?;
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+fn history(app: State<App>) -> Value {
+    serde_json::to_value(&app.readings.lock().unwrap().history).unwrap_or_default()
+}
+
+#[tauri::command]
+async fn health(app: State<'_, App>) -> Result<Value, String> {
+    if let Some((at, v)) = app.health.lock().unwrap().clone() {
+        if at.elapsed() < Duration::from_secs(60) {
+            return Ok(v);
+        }
+    }
+    let v = tauri::async_runtime::spawn_blocking(|| serde_json::to_value(wiregent_hw::health::read(30)).unwrap_or_default()).await.map_err(|e| e.to_string())?;
+    *app.health.lock().unwrap() = Some((Instant::now(), v.clone()));
+    Ok(v)
+}
+
+#[tauri::command]
+async fn drift() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        use wiregent_hw::drift::{check, live, Rules};
+        let d = check(&Rules::builtin(), &live());
+        json!({ "ok": d.iter().all(|x| x.severity == "info"), "drift": d })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn lighting() -> Value {
+    match lighting::read(&lighting::awcc_db()) {
+        Ok(devices) => json!({ "devices": devices }),
+        Err(e) => json!({ "devices": [], "error": format!("{e:#}") }),
+    }
+}
+
+#[tauri::command]
+fn game_library() -> Value {
+    serde_json::to_value(games::read()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn settings_get(app: State<App>) -> Settings {
+    app.settings.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn settings_set(app: State<App>, settings: Settings) -> Result<Settings, String> {
+    settings.validate()?;
+    settings.save()?;
+    *app.demo.lock().unwrap() = settings.demo;
+    *app.settings.lock().unwrap() = settings.clone();
+    Ok(settings)
+}
+
+/// Whether a mode switch could go through right now, and how.
+fn mode_route() -> Result<&'static str, String> {
+    if wiregent_hw::client::service_present() {
+        return Ok("service");
+    }
+    if wiregent_hw::is_admin() {
+        return Ok("direct");
+    }
+    Err("Switching modes needs the hardware service, or Alien Cockpit started as administrator.".into())
+}
+
+/// Switches the thermal mode: through the service's single writer, or directly when this app is elevated.
+/// Remembers the mode G-Mode was switched on from, for the boost key.
+pub fn switch_mode(modes: &Mutex<Modes>, readings: &source::Shared, profile: u8) -> Result<Value, String> {
+    use wiregent_hw::control::{parse_profile, set_profile, this_machine_verified};
+    let current = readings.lock().unwrap().snapshot.as_ref().and_then(|s| s["profile"].as_u64()).map(|p| p as u8);
+    let change = match mode_route()? {
+        "service" => {
+            use wiregent_hw::proto::{Request, Response, PIPE_NAME};
+            match wiregent_hw::client::request(PIPE_NAME, &Request::SetProfile { profile: format!("0x{profile:02X}") }, wiregent_hw::client::SERVICE_IMAGE).map_err(|e| format!("{e:#}"))? {
+                Response::ModeChanged { change } => change,
+                Response::Error { message } => return Err(message),
+                other => return Err(format!("unexpected answer: {other:?}")),
+            }
+        }
+        _ => {
+            let fw = wiregent_hw::wmi::Awcc::open().map_err(|e| format!("{e:#}"))?;
+            let d = wiregent_oem_alienware::Discovery::run(|c| wiregent_hw::Firmware::read(&fw, c).ok()).map_err(|e| e.to_string())?;
+            let mut m = modes.lock().unwrap();
+            let t = m.started.get_or_insert_with(Instant::now).elapsed().as_millis() as u64;
+            let r = set_profile(&fw, &d, profile, this_machine_verified(), &mut m.limit, t, &std::thread::sleep).map_err(|e| format!("{e:#}"))?;
+            serde_json::to_value(r).unwrap_or_default()
+        }
+    };
+    let _ = parse_profile;
+    let mut m = modes.lock().unwrap();
+    if profile == wiregent_oem_alienware::GMODE && current != Some(wiregent_oem_alienware::GMODE) {
+        m.previous = current;
+    }
+    m.last = Some(change.clone());
+    Ok(change)
+}
+
+#[tauri::command]
+async fn set_mode(app: State<'_, App>, profile: String) -> Result<Value, String> {
+    let p = wiregent_hw::control::parse_profile(&profile).ok_or_else(|| format!("'{profile}' isn't a mode id"))?;
+    let (modes, readings) = (app.modes.clone(), app.readings.clone());
+    tauri::async_runtime::spawn_blocking(move || switch_mode(&modes, &readings, p)).await.map_err(|e| e.to_string())?
+}
+
+/// Raises (or resets) one fan's boost, through the service or directly (as with modes).
+pub fn switch_fan_boost(modes: &Mutex<Modes>, fan: u8, level: u8) -> Result<Value, String> {
+    use wiregent_hw::control::{set_fan_boost, this_machine_verified};
+    let change = match mode_route()? {
+        "service" => {
+            use wiregent_hw::proto::{Request, Response, PIPE_NAME};
+            match wiregent_hw::client::request(PIPE_NAME, &Request::SetFanBoost { fan: format!("0x{fan:02X}"), level }, wiregent_hw::client::SERVICE_IMAGE).map_err(|e| format!("{e:#}"))? {
+                Response::BoostChanged { change } => change,
+                Response::Error { message } => return Err(message),
+                other => return Err(format!("unexpected answer: {other:?}")),
+            }
+        }
+        _ => {
+            let fw = wiregent_hw::wmi::Awcc::open().map_err(|e| format!("{e:#}"))?;
+            let d = wiregent_oem_alienware::Discovery::run(|c| wiregent_hw::Firmware::read(&fw, c).ok()).map_err(|e| e.to_string())?;
+            let mut m = modes.lock().unwrap();
+            let t = m.started.get_or_insert_with(Instant::now).elapsed().as_millis() as u64;
+            serde_json::to_value(set_fan_boost(&fw, &d, fan, level, this_machine_verified(), &mut m.limit, t, &std::thread::sleep).map_err(|e| format!("{e:#}"))?).unwrap_or_default()
+        }
+    };
+    let mut m = modes.lock().unwrap();
+    if level == 0 {
+        m.boosted.remove(&fan);
+    } else {
+        m.boosted.insert(fan, level);
+    }
+    Ok(change)
+}
+
+/// Raises every listed fan to `level` (0 puts them back on the firmware's curve).
+#[tauri::command]
+async fn set_fan_boost(app: State<'_, App>, fans: Vec<String>, level: u8) -> Result<Vec<Value>, String> {
+    let ids: Vec<u8> = fans.iter().map(|f| wiregent_hw::control::parse_profile(f).ok_or_else(|| format!("'{f}' isn't a fan id"))).collect::<Result<_, _>>()?;
+    let modes = app.modes.clone();
+    tauri::async_runtime::spawn_blocking(move || ids.into_iter().map(|f| switch_fan_boost(&modes, f, level)).collect::<Result<Vec<_>, _>>()).await.map_err(|e| e.to_string())?
+}
+
+/// Every fan this app raised goes back to the firmware's own curve (on quit).
+fn reset_boost(modes: &Mutex<Modes>) {
+    let fans: Vec<u8> = modes.lock().unwrap().boosted.keys().copied().collect();
+    for f in fans {
+        let _ = switch_fan_boost(modes, f, 0);
+    }
+}
+
+#[tauri::command]
+fn log_days() -> Value {
+    let days = log::days(&log::dir());
+    let total: u64 = days.iter().map(|d| d.bytes).sum();
+    json!({ "days": days, "totalBytes": total, "dir": log::dir() })
+}
+
+#[tauri::command]
+async fn log_read(day: String) -> Result<Vec<Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || log::read(&log::dir(), &day, 1_440)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn log_cleanup(app: State<App>) -> Vec<String> {
+    let s = app.settings.lock().unwrap().log.clone();
+    log::cleanup(&log::dir(), &log::today(), &s)
+}
+
+/// What each control can do right now, and why not when it can't.
+#[tauri::command]
+fn controls(app: State<App>) -> Value {
+    let st = app.readings.lock().unwrap();
+    let mut fan_notes = vec!["Boost only adds to the firmware's own curve, so it can't make a fan slower; it goes back to 0 when Alien Cockpit quits. Custom curves stay saved-only until the boost has been checked on this laptop.".to_string()];
+    let hot_at_low_power = st.history.iter().rev().take(60).filter(|p| p.cpu_c.is_some_and(|c| c >= 95) && p.cpu_w.is_some_and(|w| w <= 35.0)).count();
+    if hot_at_low_power >= 10 {
+        fan_notes.push("The CPU runs at 95 °C or more at 35 W or less: more fan helps, but the cause is likely hardware (a fan, fins or paste).".into());
+    }
+    let route = mode_route();
+    let modes_ok = route.is_ok() && st.source != Some(source::Source::Demo);
+    let mode_reasons: Vec<String> = match (&route, st.source) {
+        (_, Some(source::Source::Demo)) => vec!["Demo data: modes switch on the live laptop only.".into()],
+        (Err(e), _) => vec![e.clone()],
+        _ => vec![],
+    };
+    json!({
+        "modes": { "enabled": modes_ok, "route": route.ok(), "reasons": mode_reasons, "last": app.modes.lock().unwrap().last },
+        "fans": { "enabled": modes_ok, "reasons": if modes_ok { Vec::new() } else { mode_reasons.clone() }, "notes": fan_notes, "boosted": app.modes.lock().unwrap().boosted.iter().map(|(f, l)| (format!("0x{f:02X}"), *l)).collect::<std::collections::BTreeMap<_, _>>() },
+        "lighting": { "enabled": false, "reasons": ["Writing lighting needs the lighting protocol port and a test on this keyboard. The firmware keeps the current colours."] },
+    })
+}
+
+#[tauri::command]
+fn open_alienware_update() -> Result<(), String> {
+    std::process::Command::new("explorer.exe").arg(r"shell:AppsFolder\DellInc.AlienwareUpdate_htrsf667h5kn2!App").spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Opens the window, creating it again if it was closed (closing frees the web view: ~230 MB measured).
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return;
+    }
+    if let Some(cfg) = app.config().app.windows.first() {
+        match tauri::WebviewWindowBuilder::from_config(app, cfg).and_then(|b| b.build()) {
+            Ok(w) => {
+                let _ = w.set_focus();
+            }
+            Err(e) => eprintln!("can't open the window: {e}"),
+        }
+    }
+}
+
+fn tray_line(st: &source::State) -> String {
+    let Some(s) = &st.snapshot else { return "No readings: install the hardware service".into() };
+    let mode = s["profile_name"].as_str().unwrap_or("?");
+    let cpu = s["sensors"].as_array().and_then(|a| a.iter().find(|x| x["name"] == "CPU")).and_then(|x| x["celsius"].as_i64()).map(|c| format!("CPU {c} °C")).unwrap_or_default();
+    let w = st.power.as_ref().and_then(|p| p["cpuPackageW"].as_f64()).map(|w| format!(" · {w:.0} W")).unwrap_or_default();
+    let demo = if st.source == Some(source::Source::Demo) { " (demo)" } else { "" };
+    format!("{mode} · {cpu}{w}{demo}")
+}
+
+fn install_tray(app: &AppHandle) -> tauri::Result<()> {
+    let line = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Open Alien Cockpit", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&line, &PredefinedMenuItem::separator(app)?, &show, &quit])?;
+    *app.state::<App>().status_item.lock().unwrap() = Some(line);
+    let mut b = TrayIconBuilder::with_id("x17").tooltip("Alien Cockpit OSS").menu(&menu).show_menu_on_left_click(false);
+    if let Some(icon) = app.default_window_icon() {
+        b = b.icon(icon.clone());
+    }
+    b.on_menu_event(|app, ev| match ev.id().as_ref() {
+        "show" => show_main(app),
+        "quit" => app.exit(0),
+        _ => {}
+    })
+    .on_tray_icon_event(|tray, ev| {
+        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
+            show_main(tray.app_handle());
+        }
+    })
+    .build(app)?;
+    Ok(())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let settings = Settings::load();
+    let args: Vec<String> = std::env::args().collect();
+    let restarted = elevate::after_pid(&args);
+    if let Some(pid) = restarted {
+        elevate::wait_for(pid, 10);
+    }
+    #[cfg(windows)]
+    if elevate::should_ask(settings.live_admin, elevate::is_elevated(), wiregent_hw::client::service_present(), restarted.is_some()) && elevate::relaunch().is_ok() {
+        return;
+    }
+    let readings: source::Shared = Arc::new(Mutex::new(source::State::default()));
+    let demo = Arc::new(Mutex::new(settings.demo));
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)))
+        .plugin(tauri_plugin_notification::init())
+        .manage(App { readings: readings.clone(), modes: Arc::new(Mutex::new(Modes::default())), demo: demo.clone(), settings: Mutex::new(settings), health: Mutex::new(None), status_item: Mutex::new(None) })
+        .invoke_handler(tauri::generate_handler![status, history, health, drift, lighting, game_library, settings_get, settings_set, controls, set_mode, set_fan_boost, log_days, log_read, log_cleanup, open_alienware_update, restart_elevated])
+        .setup(move |app| {
+            if let Err(e) = install_tray(app.handle()) {
+                eprintln!("tray icon unavailable: {e}");
+            }
+            let handle = app.handle().clone();
+            let (r, d) = (readings.clone(), demo.clone());
+            std::thread::spawn(move || {
+                let h = handle.clone();
+                source::run(r, d, move |text| {
+                    if h.state::<App>().settings.lock().unwrap().notify {
+                        let _ = h.notification().builder().title("Alien Cockpit OSS").body(&text).show();
+                    }
+                })
+            });
+            // The boost key, where AWCC can't hear it (an admin window in front) or isn't running.
+            #[cfg(windows)]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let mut debounce = boostkey::Debounce::default();
+                    let h = handle.clone();
+                    let r = boostkey::win::listen(move || {
+                        let awcc = { let mut s = sysinfo::System::new(); s.refresh_processes(sysinfo::ProcessesToUpdate::All, true); s.processes().values().any(|p| p.name().to_string_lossy().eq_ignore_ascii_case("AWCC.UCSubAgent.exe")) };
+                        if !boostkey::should_handle(boostkey::win::foreground_elevated(), awcc) || !debounce.accept(Instant::now()) {
+                            return;
+                        }
+                        let app = h.state::<App>();
+                        let current = app.readings.lock().unwrap().snapshot.as_ref().and_then(|s| s["profile"].as_u64()).map(|p| p as u8);
+                        let default = wiregent_hw::control::parse_profile(&app.settings.lock().unwrap().default_profile).unwrap_or(0xA0);
+                        let target = boostkey::toggle_target(current, app.modes.lock().unwrap().previous, default);
+                        let (modes, readings, h2) = (app.modes.clone(), app.readings.clone(), h.clone());
+                        std::thread::spawn(move || {
+                            let text = match switch_mode(&modes, &readings, target) {
+                                Ok(c) => format!("{} (boost key)", c["after"].as_str().unwrap_or("Mode changed")),
+                                Err(e) => format!("Boost key: {e}"),
+                            };
+                            let _ = h2.notification().builder().title("Alien Cockpit").body(&text).show();
+                        });
+                    });
+                    if let Err(e) = r {
+                        eprintln!("boost key listener unavailable: {e:#}");
+                    }
+                });
+            }
+            // The daily log: the latest reading every `every_s`, cleanup at start and when the day changes.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let dir = log::dir();
+                let (mut day, mut last_t): (String, Option<u64>) = (String::new(), None);
+                loop {
+                    let s = handle.state::<App>().settings.lock().unwrap().log.clone();
+                    let today = log::today();
+                    if today != day {
+                        log::cleanup(&dir, &today, &s);
+                        day = today.clone();
+                    }
+                    if s.enabled {
+                        let point = handle.state::<App>().readings.lock().unwrap().history.back().cloned();
+                        if let Some(p) = point {
+                            if last_t.is_none_or(|t| p.t >= t + s.every_s as u64 * 1_000) {
+                                if let Ok(v) = serde_json::to_value(&p) {
+                                    let _ = log::append(&dir, &day, &v);
+                                }
+                                last_t = Some(p.t);
+                            }
+                        }
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            });
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                let line = tray_line(&handle.state::<App>().readings.lock().unwrap());
+                if let Some(item) = handle.state::<App>().status_item.lock().unwrap().as_ref() {
+                    let _ = item.set_text(&line);
+                }
+                if let Some(t) = handle.tray_by_id("x17") {
+                    let _ = t.set_tooltip(Some(format!("Alien Cockpit OSS\n{line}")));
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            });
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building Alien Cockpit OSS")
+        // Closing the window destroys it and its web view; the app stays in the tray (Quit is in its menu).
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
+            // Quitting: any fan this app raised goes back to the firmware's own curve.
+            tauri::RunEvent::Exit => reset_boost(&app.state::<App>().modes),
+            _ => {}
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_refuse_unsafe_or_unknown_values() {
+        let ok = Settings::default();
+        assert!(ok.validate().is_ok());
+        let bad = |f: &dyn Fn(&mut Settings)| {
+            let mut s = Settings::default();
+            f(&mut s);
+            s.validate().is_err()
+        };
+        assert!(bad(&|s| s.emergency_c = 99), "can't raise the emergency trigger past 98 °C");
+        assert!(bad(&|s| s.emergency_c = 70));
+        assert!(bad(&|s| s.default_profile = "0xAB".into()), "G-Mode isn't a resting mode");
+        assert!(bad(&|s| s.default_profile = "0xA2".into()));
+        assert!(bad(&|s| s.boost_key = "macro".into()));
+        assert!(bad(&|s| { s.fan_curves.insert("0x32".into(), vec![[60, 20], [50, 40]]); }), "falling temperature");
+        assert!(bad(&|s| { s.fan_curves.insert("0x32".into(), vec![[60, 20], [80, 140]]); }), "boost over 100 %");
+        assert!(bad(&|s| { s.game_modes.insert("g".into(), "0x99".into()); }));
+        assert!(bad(&|s| s.theme = "neon".into()));
+        assert_eq!(Settings::default().theme, "dark", "dark by default");
+        let mut good = Settings::default();
+        good.fan_curves.insert("0x32".into(), vec![[50, 0], [70, 40], [90, 100]]);
+        good.game_modes.insert("warframe".into(), "0xA1".into());
+        assert!(good.validate().is_ok());
+    }
+
+    #[test]
+    fn the_tray_line_says_when_there_is_no_source() {
+        assert!(tray_line(&source::State::default()).contains("install the hardware service"));
+        let st = source::State { snapshot: Some(json!({ "profile_name": "Balanced", "sensors": [{ "name": "CPU", "celsius": 96 }] })), power: Some(json!({ "cpuPackageW": 24.6 })), source: Some(source::Source::Demo), ..Default::default() };
+        assert_eq!(tray_line(&st), "Balanced · CPU 96 °C · 25 W (demo)");
+    }
+}

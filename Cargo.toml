@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+# Alien Cockpit OSS (app/src-tauri) and the Alienware x17 R2 hardware crates (crates/).
+members = ["crates/oem-alienware", "crates/hw", "crates/hw-service", "crates/hw-probe", "app/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+tempfile = "3"

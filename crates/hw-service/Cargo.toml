@@ -1,0 +1,27 @@
+[package]
+name = "wiregent-hw-service"
+version.workspace = true
+edition.workspace = true
+
+# H1b of docs/plans/x17-hw-service-design.md: the Wiregent hardware service. Read-only in this phase: it
+# reads the Alienware firmware on one controller thread and serves readings over a locked-down pipe.
+
+[[bin]]
+name = "wiregent-hw"
+path = "src/main.rs"
+
+[dependencies]
+wiregent-hw = { path = "../hw" }
+wiregent-oem-alienware = { path = "../oem-alienware" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_Services",
+  "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug",
+] }
+
+[dev-dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }

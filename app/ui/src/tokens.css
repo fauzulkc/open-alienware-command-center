@@ -1,0 +1,176 @@
+/* Wiregent console register (docs/DESIGN.md). Values copied from wiregent tokens.css / wg-system.css.
+   OKLCH only; warm-tinted neutrals; the accent is ink, not a hue. */
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+  --font-display: 'Bricolage Grotesque Variable', 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Geist Variable', 'Geist', 'Segoe UI Variable Text', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', 'Geist Mono', 'Cascadia Mono', ui-monospace, monospace;
+
+  --canvas: oklch(0.975 0.007 92);
+  --surface: oklch(0.992 0.004 92);
+  --surface-2: oklch(0.955 0.008 92);
+  --overlay: oklch(0.992 0.004 92);
+  --ink: oklch(0.24 0.012 78);
+  --muted: oklch(0.45 0.011 78);
+  --subtle: oklch(0.58 0.009 78);
+  --faint: oklch(0.72 0.007 78);
+  --hairline: oklch(0.9 0.006 92);
+  --divider: oklch(0.93 0.005 92);
+  --signal: oklch(0.28 0.014 78);
+  --signal-hover: oklch(0.2 0.014 78);
+  --signal-ink: oklch(0.98 0.006 92);
+  /* done is sage (LK-7); --live is the toast dot only */
+  --pos-hint: oklch(0.7 0.04 158);
+  --pos-signal: oklch(0.58 0.08 158);
+  --pos-major: oklch(0.5 0.08 158);
+  --live: var(--pos-signal);
+  --caution-hint: oklch(0.75 0.05 78);
+  --caution-signal: oklch(0.66 0.1 78);
+  /* status text uses -major, marks and fills use -signal (LK-8) */
+  --caution-major: oklch(0.54 0.11 70);
+  --neg-hint: oklch(0.64 0.05 27);
+  --neg-signal: oklch(0.58 0.12 27);
+  --neg-major: oklch(0.53 0.18 27);
+  --focus: oklch(0.24 0.012 78 / 0.42);
+  --etch: oklch(0.24 0.012 78 / 0.028);
+  --etch-strong: oklch(0.24 0.012 78 / 0.05);
+  --etch-invert: oklch(0.99 0.004 92 / 0.055);
+  --shim: oklch(0.24 0.012 78 / 0.08);
+  --scrim: oklch(0.2 0.01 78 / 0.45);
+  --shadow-md: 0 4px 12px oklch(0.24 0.02 78 / 0.06), 0 2px 4px oklch(0.24 0.02 78 / 0.04);
+  --shadow-lg: 0 12px 32px oklch(0.24 0.02 78 / 0.08), 0 4px 8px oklch(0.24 0.02 78 / 0.05);
+  --fp-op: 0.055;
+
+  /* the window's moments (LK-1, LK-2): a band pair from the setup and a mark measured on the ground */
+  --hue-silver-a: oklch(0.62 0.014 250);
+  --hue-silver-b: oklch(0.8 0.01 250);
+  --hue-silver-mark: var(--ink);
+  --hue-amber-a: oklch(0.68 0.13 68);
+  --hue-amber-b: oklch(0.79 0.1 80);
+  --hue-amber-mark: oklch(0.62 0.12 70);
+  --hue-purple-a: oklch(0.6 0.2 300);
+  --hue-purple-b: oklch(0.67 0.16 280);
+  --hue-purple-mark: oklch(0.6 0.17 290);
+  --hue-red-a: oklch(0.58 0.19 25);
+  --hue-red-b: oklch(0.67 0.15 32);
+  --hue-red-mark: oklch(0.58 0.19 25);
+  --hue-sage-a: oklch(0.6 0.08 158);
+  --hue-sage-b: oklch(0.72 0.06 150);
+  --hue-sage-mark: oklch(0.58 0.08 158);
+
+  /* the AI accent: identity, never a state (LK-10; owner 2026-10-21: violet) */
+  --ai-accent: oklch(0.56 0.15 280);
+
+  /* motion: one house curve, three speeds */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-entrance: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur-base: 220ms;
+  --dur-slow: 360ms;
+  --stagger: 70ms;
+
+  --navw: 196px;
+  --railw: 372px;
+  --topbar: 50px;
+
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --canvas: oklch(0.15 0.004 80);
+  --surface: oklch(0.19 0.004 80);
+  --surface-2: oklch(0.235 0.005 80);
+  --overlay: oklch(0.205 0.005 80);
+  --ink: oklch(0.96 0.003 80);
+  --muted: oklch(0.72 0.004 80);
+  --subtle: oklch(0.6 0.004 80);
+  --faint: oklch(0.46 0.004 80);
+  --hairline: oklch(0.29 0.005 80);
+  --divider: oklch(0.26 0.005 80);
+  --signal: oklch(0.93 0.006 88);
+  --signal-hover: oklch(0.99 0.004 92);
+  --signal-ink: oklch(0.15 0.004 80);
+  --pos-hint: oklch(0.7 0.04 158);
+  --pos-signal: oklch(0.72 0.08 158);
+  --pos-major: oklch(0.76 0.08 158);
+  --live: var(--pos-signal);
+  --caution-hint: oklch(0.72 0.05 78);
+  --caution-signal: oklch(0.8 0.1 78);
+  --caution-major: oklch(0.8 0.1 78);
+  --neg-hint: oklch(0.64 0.055 27);
+  --neg-signal: oklch(0.7 0.12 27);
+  --neg-major: oklch(0.72 0.18 27);
+  --focus: oklch(0.95 0.006 90 / 0.45);
+  --etch: oklch(0.95 0.006 90 / 0.04);
+  --etch-strong: oklch(0.95 0.006 90 / 0.07);
+  --etch-invert: oklch(0.17 0.008 80 / 0.075);
+  --shim: oklch(0.95 0.006 90 / 0.08);
+  --scrim: oklch(0.05 0.004 80 / 0.6);
+  --shadow-md: 0 4px 14px oklch(0 0 0 / 0.45);
+  --shadow-lg: 0 16px 40px oklch(0 0 0 / 0.55);
+  --fp-op: 0.075;
+
+  --hue-silver-a: oklch(0.55 0.012 250);
+  --hue-silver-b: oklch(0.72 0.01 250);
+  --hue-silver-mark: var(--ink);
+  --hue-amber-a: oklch(0.7 0.13 68);
+  --hue-amber-b: oklch(0.82 0.1 80);
+  --hue-amber-mark: oklch(0.78 0.12 72);
+  --hue-purple-a: oklch(0.64 0.19 300);
+  --hue-purple-b: oklch(0.74 0.14 280);
+  --hue-purple-mark: oklch(0.72 0.14 290);
+  --hue-red-a: oklch(0.62 0.18 25);
+  --hue-red-b: oklch(0.72 0.14 32);
+  --hue-red-mark: oklch(0.7 0.16 25);
+  --hue-sage-a: oklch(0.62 0.08 158);
+  --hue-sage-b: oklch(0.76 0.06 150);
+  --hue-sage-mark: oklch(0.74 0.08 158);
+
+  --ai-accent: oklch(0.74 0.12 280);
+}
+
+/* Wiregent X17 adds a third theme: a cool mid-grey between Wiregent's light and dark. Same token names, so
+   every rule reads the theme the person picked (Settings → Appearance). */
+[data-theme='gray'] {
+  color-scheme: dark;
+  --canvas: oklch(0.3 0.006 255);
+  --surface: oklch(0.345 0.006 255);
+  --surface-2: oklch(0.39 0.007 255);
+  --overlay: oklch(0.36 0.007 255);
+  --ink: oklch(0.97 0.003 255);
+  --muted: oklch(0.82 0.005 255);
+  --subtle: oklch(0.72 0.005 255);
+  --faint: oklch(0.6 0.005 255);
+  --hairline: oklch(0.44 0.007 255);
+  --divider: oklch(0.41 0.007 255);
+  --signal: oklch(0.95 0.004 255);
+  --signal-hover: oklch(0.99 0.003 255);
+  --signal-ink: oklch(0.27 0.006 255);
+  --pos-hint: oklch(0.74 0.045 158);
+  --pos-signal: oklch(0.8 0.08 158);
+  --pos-major: oklch(0.84 0.08 158);
+  --live: var(--pos-signal);
+  --caution-hint: oklch(0.78 0.05 78);
+  --caution-signal: oklch(0.86 0.1 78);
+  --caution-major: oklch(0.86 0.1 78);
+  --neg-hint: oklch(0.72 0.06 27);
+  --neg-signal: oklch(0.78 0.12 27);
+  --neg-major: oklch(0.8 0.15 27);
+  --focus: oklch(0.97 0.004 255 / 0.5);
+  --etch: oklch(0.97 0.004 255 / 0.045);
+  --etch-strong: oklch(0.97 0.004 255 / 0.08);
+  --shim: oklch(0.97 0.004 255 / 0.09);
+  --scrim: oklch(0.12 0.006 255 / 0.55);
+  --shadow-md: 0 4px 14px oklch(0 0 0 / 0.3);
+  --shadow-lg: 0 16px 40px oklch(0 0 0 / 0.4);
+  --hue-silver-a: oklch(0.65 0.012 250);
+  --hue-silver-b: oklch(0.8 0.01 250);
+  --hue-silver-mark: var(--ink);
+  --hue-amber-mark: oklch(0.84 0.12 72);
+  --hue-purple-mark: oklch(0.8 0.13 290);
+  --hue-red-mark: oklch(0.78 0.15 25);
+  --hue-sage-mark: oklch(0.82 0.08 158);
+  --ai-accent: oklch(0.8 0.11 280);
+}

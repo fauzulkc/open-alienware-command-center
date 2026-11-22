@@ -1,0 +1,26 @@
+[package]
+name = "wiregent-hw"
+version.workspace = true
+edition.workspace = true
+
+# H1 of docs/plans/plugins-v1.md: the read side of the Alienware plugin. Readings (firmware, CPU power),
+# health (battery, disks, crash events, fan faults) and the Dell drift check. Nothing here writes to the
+# firmware or changes a service.
+
+[[bin]]
+name = "wiregent-alienware"
+path = "src/bin/wiregent-alienware.rs"
+
+[dependencies]
+wiregent-oem-alienware = { path = "../oem-alienware" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Wmi",
+  "Win32_System_Variant", "Win32_System_Ole", "Win32_System_Rpc", "Win32_UI_Shell", "Win32_System_Performance",
+  "Win32_System_EventLog", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_Threading",
+  "Win32_Storage_FileSystem", "Win32_System_Services",
+] }

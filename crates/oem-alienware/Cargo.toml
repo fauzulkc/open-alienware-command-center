@@ -1,0 +1,11 @@
+[package]
+name = "wiregent-oem-alienware"
+version.workspace = true
+edition.workspace = true
+
+# Pure logic for the Alienware plugin (docs/plans/plugins-v1.md, docs/plans/x17-control-service.md):
+# AWCC WMI argument packing, the method + op allow-list, discovery, and the safety rules. No Windows calls
+# here: the service and the probe feed it real WMI answers, the tests feed it the 2026-10-07 captures.
+
+[dependencies]
+serde.workspace = true

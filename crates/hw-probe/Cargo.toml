@@ -1,0 +1,25 @@
+[package]
+name = "wiregent-hw-probe"
+version.workspace = true
+edition.workspace = true
+
+# H0 of docs/plans/plugins-v1.md: a read-only probe of the Alienware firmware, the CPU power counters and the
+# boost key. It can't write: it only builds read calls, and its WMI layer refuses anything else.
+
+[[bin]]
+name = "wiregent-hw-probe"
+path = "src/main.rs"
+
+[dependencies]
+wiregent-oem-alienware = { path = "../oem-alienware" }
+wiregent-hw = { path = "../hw" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Wmi", "Win32_System_Variant",
+  "Win32_System_Ole", "Win32_System_Rpc", "Win32_UI_Input", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell",
+  "Win32_System_Performance", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi",
+] }

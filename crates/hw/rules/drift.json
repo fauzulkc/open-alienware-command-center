@@ -1,0 +1,31 @@
+{
+  "about": "Dell services the owner decided about, and the state each should be in (startup-audit/decisions.json, 2026-11-09). Wiregent reports drift; it never fixes it on its own.",
+  "rules": [
+    {
+      "service": "DellTechHub",
+      "expect": ["Delayed"],
+      "severity": "high",
+      "why": "Your rule: Automatic (Delayed Start). It starts the AWCC helpers (boost key, modes); Delayed keeps it out of the boot path.",
+      "critical_if": ["Manual", "Disabled"],
+      "critical_why": "With DellTechHub on Manual or Disabled, the AWCC boost key and modes stop working after the next restart (seen 2026-10-14)."
+    },
+    {
+      "service": "SupportAssistAgent",
+      "expect": ["Delayed"],
+      "severity": "medium",
+      "why": "You chose to keep SupportAssist on Automatic (Delayed) for now (2026-11-09)."
+    },
+    {
+      "service": "DellClientManagementService",
+      "expect": ["Delayed"],
+      "severity": "medium",
+      "why": "Kept: Alienware Update's backend and the AWCC bridge."
+    },
+    {
+      "service": "Alienware SupportAssist Remediation",
+      "expect": ["Manual"],
+      "severity": "low",
+      "why": "Set to Manual on 2026-10-14."
+    }
+  ]
+}

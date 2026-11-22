@@ -1,0 +1,321 @@
+@import './tokens.css';
+
+/* Alien Cockpit OSS: Wiregent's console register (tokens.css), shaped as a cockpit rather than a grid of
+   boxes: soft surfaces, generous radius, hairlines at half strength, numbers that lead. */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body {
+  background: var(--canvas);
+  color: var(--ink); font-family: var(--font-sans); font-size: 14px; line-height: 1.55; letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased; user-select: none; overflow: hidden;
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 0; }
+button:disabled { cursor: not-allowed; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 8px; }
+* { scrollbar-width: thin; scrollbar-color: var(--hairline) transparent; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.lbl { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+code { font-family: var(--font-mono); font-size: 11.5px; padding: 1px 6px; border-radius: 6px; background: var(--etch-strong); }
+:root {
+  --soft: color-mix(in oklab, var(--hairline) 55%, transparent); --r: 16px;
+  /* Depth without shine: flat fills, a crisp edge, a lit top lip, a short contact shadow and a soft drop. */
+  --edge: color-mix(in oklab, var(--ink) 10%, transparent);
+  --edge-strong: color-mix(in oklab, var(--ink) 17%, transparent);
+  --lip: inset 0 1px 0 color-mix(in oklab, white 7%, transparent);
+  --depth: 0 1px 1px oklch(0 0 0 / 0.10), 0 2px 4px -1px oklch(0 0 0 / 0.10), 0 12px 28px -10px oklch(0 0 0 / 0.28);
+  --raised: inset 0 1px 0 color-mix(in oklab, white 9%, transparent), 0 1px 2px oklch(0 0 0 / 0.28), 0 0 0 1px var(--edge);
+  --well: inset 0 1px 2px oklch(0 0 0 / 0.16), inset 0 0 0 1px var(--edge);
+  --chart-h: clamp(130px, 22vh, 240px);
+}
+
+/* ---------- shell ---------- */
+.app { height: 100%; display: grid; grid-template-rows: 56px minmax(0, 1fr); }
+html[data-text='large'] .app { zoom: 1.08; width: calc(100vw / 1.08); height: calc(100vh / 1.08); }
+.topbar { display: flex; align-items: center; gap: 12px; padding: 0 6px 0 clamp(12px, 2vw, 20px); min-width: 0; background: var(--canvas); border-bottom: 1px solid var(--edge); -webkit-app-region: drag; }
+.topbar button, .topbar .tip, .topbar .tabsbar, .topbar .themes { -webkit-app-region: no-drag; }
+.brand { display: flex; align-items: center; gap: 10px; flex: none; }
+.mark { width: 24px; height: 24px; }
+.brand-nm { font-family: var(--font-display); font-weight: 800; font-size: 16px; letter-spacing: -0.035em; white-space: nowrap; }
+.role { padding: 2px 6px; border: 1px solid var(--soft); border-radius: 4px; font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: 0.12em; color: var(--muted); }
+.tabsbar { display: flex; gap: 2px; margin-left: clamp(4px, 1.5vw, 18px); padding: 3px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); min-width: 0; overflow-x: auto; scrollbar-width: none; flex: 0 1 auto; }
+.tabsbar::-webkit-scrollbar { display: none; }
+.tabsbar button { flex: none; height: 30px; padding: 0 clamp(9px, 1.2vw, 14px); border-radius: 999px; color: var(--muted); font-weight: 500; transition: color var(--dur-fast) var(--ease), background var(--dur-base) var(--ease); }
+.tabsbar button:hover { color: var(--ink); }
+.tabsbar button.on { color: var(--ink); background: var(--surface); box-shadow: var(--raised); }
+.spacer { flex: 1; }
+.pill { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 12px 0 10px; border-radius: 999px; background: var(--etch-strong); font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); box-shadow: var(--well); white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.dot.live { background: var(--pos-signal); }
+.dot.demo { background: var(--caution-signal); } .dot.off { background: var(--neg-signal); }
+.themes { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); }
+.themes button { height: 24px; padding: 0 10px; border-radius: 999px; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.themes button.on { background: var(--surface); color: var(--ink); box-shadow: var(--raised); }
+.main { overflow-y: auto; overflow-x: hidden; padding: clamp(12px, 2vw, 22px) clamp(12px, 2.2vw, 26px) 40px; }
+
+/* ---------- layout ---------- */
+.cockpit { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(10px, 1.4vw, 16px); max-width: 1480px; margin: 0 auto; }
+.span2 { grid-column: span 2; } .span3 { grid-column: 1 / -1; }
+.panel { background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r); padding: clamp(12px, 1.4vw, 16px) clamp(12px, 1.6vw, 18px) clamp(14px, 1.6vw, 18px); min-width: 0; box-shadow: var(--lip), var(--depth); }
+.panel-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.panel p + p { margin-top: 8px; }
+.note { grid-column: 1 / -1; padding: 10px 14px; border-radius: 12px; background: color-mix(in oklab, var(--caution-signal) 10%, var(--surface)); border: 1px solid color-mix(in oklab, var(--caution-signal) 30%, transparent); box-shadow: var(--lip); }
+
+.verdict { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; font-family: var(--font-display); font-weight: 700; font-size: 18px; letter-spacing: -0.02em; }
+.v-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--faint); }
+.verdict.hot .v-dot { background: var(--neg-major); }
+.verdict.warm .v-dot { background: var(--caution-major); } .verdict.ok .v-dot { background: var(--pos-major); }
+
+/* hero: two gauges around the mode */
+.hero { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(150px, 0.75fr) minmax(0, 2fr) minmax(150px, 0.75fr); grid-template-areas: 'cpu mid gpu'; align-items: center; justify-items: center; gap: clamp(8px, 1.6vw, 18px); padding: clamp(12px, 1.6vw, 18px) clamp(12px, 2vw, 22px); border-radius: 20px;
+  background: var(--surface); border: 1px solid var(--edge); box-shadow: var(--lip), var(--depth); }
+.hero > :first-child { grid-area: cpu; } .hero > .hero-mid { grid-area: mid; } .hero > :last-child { grid-area: gpu; }
+.hero-mid { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.mode-now { font-family: var(--font-display); font-weight: 800; font-size: clamp(26px, 3vw, 40px); letter-spacing: -0.035em; line-height: 1.05; }
+.gauge { position: relative; width: clamp(150px, 17vw, 220px); aspect-ratio: 220 / 196; display: grid; place-items: center; }
+.gauge svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.g-track { fill: none; stroke: color-mix(in oklab, var(--ink) 9%, transparent); stroke-width: 10; stroke-linecap: round; }
+.g-fill { fill: none; stroke-width: 10; stroke-linecap: round; transition: d var(--dur-slow) var(--ease), stroke var(--dur-slow) var(--ease); }
+.g-zone { fill: none; stroke-width: 2.5; stroke-linecap: round; opacity: 0.8; }
+.g-zone.warm { stroke: var(--caution-signal); } .g-zone.hot { stroke: var(--neg-signal); }
+.g-read { display: flex; flex-direction: column; align-items: center; gap: 2px; margin-top: 8px; }
+.g-val { font-family: var(--font-display); font-weight: 800; font-size: 46px; letter-spacing: -0.04em; line-height: 1; font-variant-numeric: tabular-nums; transition: color var(--dur-slow) var(--ease); }
+.g-val small { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--muted); margin-left: 3px; }
+.g-sub { font-size: 12px; color: var(--muted); }
+
+/* mode dock */
+.dock { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.seg { display: inline-flex; flex-wrap: wrap; justify-content: center; padding: 4px; gap: 2px; border-radius: 22px; background: var(--etch-strong); box-shadow: var(--well); }
+.seg button { height: 34px; padding: 0 clamp(10px, 1.1vw, 15px); border-radius: 999px; color: var(--muted); font-weight: 600; transition: all var(--dur-base) var(--ease); }
+.seg button:hover:not(:disabled) { color: var(--ink); }
+.seg button.on, .seg button.on:hover:not(:disabled) { color: var(--signal-ink); background: var(--signal); box-shadow: var(--raised); }
+.seg button:disabled:not(.on) { opacity: 0.55; }
+.seg.small button { height: 28px; padding: 0 14px; }
+.gmode { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 18px; border-radius: 999px; font-family: var(--font-display); font-weight: 800; letter-spacing: -0.01em; border: 1px solid var(--soft); background: var(--etch); transition: all var(--dur-base) var(--ease); }
+.gm-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); transition: all var(--dur-base) var(--ease); }
+.gmode.on { border-color: color-mix(in oklab, var(--neg-signal) 60%, transparent); background: color-mix(in oklab, var(--neg-signal) 14%, var(--surface)); }
+.gmode.on .gm-dot { background: var(--neg-major); }
+.gmode:disabled { opacity: 0.55; }
+.pending { animation: pulse 0.9s var(--ease) infinite; }
+@keyframes pulse { 50% { opacity: 0.55; } }
+.m-res { font-size: 12px; } .m-res.ok { color: var(--pos-major); } .m-res.bad { color: var(--caution-major); }
+.locked-why { margin-top: 4px; font-size: 12px; color: var(--muted); max-width: 520px; }
+.locked-why p { margin: 2px 0; }
+.mode-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.mcard { text-align: left; padding: 14px; border-radius: 12px; background: var(--etch); border: 1px solid var(--edge); box-shadow: var(--lip); display: flex; flex-direction: column; gap: 4px; transition: all var(--dur-base) var(--ease); }
+.mcard:hover:not(:disabled) { border-color: var(--edge-strong); }
+.mcard b { font-family: var(--font-display); font-weight: 800; font-size: 15px; letter-spacing: -0.02em; }
+.mcard small { color: var(--muted); }
+.mcard.on, .mcard.on:hover:not(:disabled) { background: var(--signal); color: var(--signal-ink); border-color: transparent; box-shadow: var(--raised); } .mcard.on small { color: color-mix(in oklab, var(--signal-ink) 70%, transparent); }
+.mcard:disabled:not(.on) { opacity: 0.55; }
+
+/* charts */
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: var(--chart-h); cursor: crosshair; }
+.grid-l { stroke: var(--divider); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.7; }
+.cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.dot-pt { stroke: var(--surface); stroke-width: 2; }
+.chart-tip { position: absolute; top: 6px; transform: translateX(-50%); pointer-events: none; display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border-radius: 10px; background: var(--overlay); box-shadow: var(--lip), var(--depth); border: 1px solid var(--edge-strong); font-size: 12px; white-space: nowrap; z-index: 2; }
+.chart-tip i, .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
+.legend { display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.legend b { color: var(--ink); font-weight: 600; }
+
+/* moment */
+.moment { grid-row: span 2; }
+.tabs { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); }
+.tabs button { height: 22px; padding: 0 9px; border-radius: 999px; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted); }
+.tabs button.on { background: var(--surface); color: var(--ink); box-shadow: var(--raised); }
+.m-totals { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.m-totals b { color: var(--ink); }
+.procs { list-style: none; display: flex; flex-direction: column; gap: 9px; }
+.procs li { display: grid; grid-template-columns: minmax(0, 1fr) 70px 74px; gap: 10px; align-items: center; }
+.p-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.p-bar { height: 5px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); overflow: hidden; }
+.p-bar i { display: block; height: 100%; border-radius: 999px; background: var(--ink); transition: width var(--dur-slow) var(--ease); }
+.p-val { text-align: right; font-size: 12px; }
+
+/* fan rotors */
+.rotors { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 14px 10px; }
+.rotor { display: flex; flex-direction: column; align-items: center; gap: 2px; position: relative; }
+.rotor svg { width: clamp(76px, 8vw, 96px); height: auto; aspect-ratio: 1; }
+.r-ring { fill: none; stroke: var(--soft); stroke-width: 1.5; }
+.r-well { fill: var(--etch); }
+.r-blades path { fill: color-mix(in oklab, var(--ink) 78%, transparent); }
+.r-ghost path { fill: var(--ink); }
+.r-hub { fill: var(--surface); stroke: var(--soft); stroke-width: 1.5; }
+.r-rpm { font-size: 15px; font-weight: 600; } .r-rpm small { color: var(--muted); font-size: 10px; }
+.r-pct { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.1; }
+.r-id { color: var(--subtle); text-transform: none; }
+.r-arc { fill: none; stroke: var(--live); stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray 600ms var(--ease); }
+.rotor.stopped .r-arc { stroke: var(--neg-major); }
+.r-flag { position: absolute; top: 4px; right: 4px; padding: 1px 6px; border-radius: 999px; font-family: var(--font-mono); font-size: 8.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.r-flag.stopped { background: color-mix(in oklab, var(--neg-signal) 18%, var(--surface)); color: var(--neg-major); }
+.r-flag.fixed { background: color-mix(in oklab, var(--caution-signal) 18%, var(--surface)); color: var(--caution-major); }
+.rotor.stopped .r-blades path { fill: color-mix(in oklab, var(--neg-major) 70%, transparent); }
+
+/* hover tips */
+.tip { position: relative; display: inline-block; }
+.tip::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translate(-50%, 4px); width: max-content; max-width: 280px; padding: 8px 10px; border-radius: 10px; background: var(--overlay); color: var(--ink); box-shadow: var(--lip), var(--depth); border: 1px solid var(--edge-strong); font-family: var(--font-sans); font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; line-height: 1.4; white-space: normal; text-align: left; opacity: 0; pointer-events: none; transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); z-index: 20; }
+.tip:not(:hover):not(:focus-visible)::after { display: none; }
+.tip:hover::after, .tip:focus-visible::after { animation: tip-in 160ms var(--ease) 250ms forwards; }
+@keyframes tip-in { to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* lighting, health, settings */
+.glow-strip { display: flex; height: 22px; border-radius: 999px; overflow: hidden; gap: 2px; box-shadow: var(--well); }
+.glow-strip .tip { display: contents; }
+.glow-strip i { display: block; height: 100%; min-width: 6px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+.chip { height: 28px; padding: 0 12px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; }
+.chip.on { background: var(--signal); color: var(--signal-ink); box-shadow: var(--raised); }
+.chip:disabled { opacity: 0.55; }
+.btn { height: 34px; padding: 0 16px; border-radius: 999px; background: var(--signal); color: var(--signal-ink); font-weight: 600; box-shadow: var(--raised); }
+.battery .cell { position: relative; height: 36px; border-radius: 10px; background: var(--etch-strong); box-shadow: var(--well); overflow: hidden; margin-bottom: 10px; }
+.battery .cell::after { content: ''; position: absolute; right: -6px; top: 11px; width: 6px; height: 14px; border-radius: 0 3px 3px 0; background: var(--etch-strong); }
+.battery .cell i { display: block; height: 100%; background: var(--pos-signal); }
+.battery .cell span { position: absolute; inset: 0; display: grid; place-items: center; font-weight: 700; }
+.facts { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.facts li { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.facts b { font-family: var(--font-display); font-size: 20px; }
+.good { color: var(--pos-major); } .warn { color: var(--caution-major); } .bad { color: var(--neg-major); }
+.drift { padding: 8px 0; } .drift + .drift { border-top: 1px solid var(--soft); }
+.sev { font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; margin-right: 8px; background: var(--etch-strong); }
+.sev.critical, .sev.high { color: var(--neg-major); } .sev.medium { color: var(--caution-major); }
+.ok-t { color: var(--pos-major); } .warn-t { color: var(--caution-major); }
+.field { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+select, input[type='range'] { background: var(--etch-strong); border: 1px solid var(--edge); box-shadow: var(--well); border-radius: 10px; padding: 6px 10px; accent-color: var(--ink); }
+.check { display: flex; gap: 10px; align-items: flex-start; line-height: 1.45; margin: 6px 0; }
+.check input { accent-color: var(--ink); margin-top: 3px; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.curve { width: 100%; max-width: 520px; touch-action: none; }
+.curve-line { fill: none; stroke: var(--ink); stroke-width: 2.2; }
+.curve-pt { fill: var(--surface); stroke: var(--ink); stroke-width: 2; cursor: grab; }
+.axis { fill: var(--subtle); font-family: var(--font-mono); font-size: 10px; }
+/* fluid sizes: three columns wide, two at medium, one when narrow; the hero puts the mode under the gauges */
+@media (max-width: 1100px) { .cockpit { grid-template-columns: repeat(2, minmax(0, 1fr)); } .span2 { grid-column: 1 / -1; } .moment { grid-row: auto; }
+  .hero { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: 'cpu gpu' 'mid mid'; } .gauge { width: clamp(150px, 30vw, 220px); } }
+@media (max-width: 760px) { .cockpit { grid-template-columns: minmax(0, 1fr); } .split, .split3, .toggles-grid { grid-template-columns: minmax(0, 1fr); }
+  .gauge { width: clamp(130px, 40vw, 200px); } .procs li { grid-template-columns: minmax(0, 1fr) 50px 64px; } }
+@media (max-width: 980px) { .topbar .themes { display: none; } }
+@media (max-width: 720px) { .brand-nm, .role, .pill-text { display: none; } .pill { padding: 0 9px; } }
+@media (max-height: 640px) { :root { --chart-h: clamp(110px, 20vh, 160px); } .fgraph svg { height: clamp(150px, 32vh, 220px); } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* fan boost, fan graphs, history, log settings, multi-scale legend */
+.boost { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.levels { display: inline-flex; gap: 6px; }
+.lvl { height: 34px; min-width: 60px; padding: 0 14px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); font-weight: 700; font-family: var(--font-mono); font-size: 12px; transition: all var(--dur-base) var(--ease); }
+.lvl.on, .lvl.on:hover:not(:disabled) { background: var(--signal); color: var(--signal-ink); box-shadow: var(--raised); }
+.lvl:disabled:not(.on) { opacity: 0.5; }
+.fgraph svg { width: 100%; height: clamp(170px, 30vh, 290px); display: block; }
+.sdot { opacity: 0.55; }
+.medline { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linejoin: round; }
+.medpt { fill: var(--surface); stroke: var(--ink); stroke-width: 2; }
+.maxline { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 4; }
+.hotband { fill: color-mix(in oklab, var(--neg-signal) 8%, transparent); }
+.medkey { background: var(--ink) !important; border-radius: 2px !important; height: 3px !important; width: 14px !important; }
+.duty { list-style: none; display: flex; flex-direction: column; gap: 14px; }
+.duty li { display: grid; grid-template-columns: 82px minmax(0, 1fr) 40px; gap: 4px 10px; align-items: center; }
+.duty li > .small { grid-column: 2 / -1; margin-top: -4px; }
+.d-bar { position: relative; height: 8px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); }
+.d-bar i { display: block; height: 100%; border-radius: 999px; background: var(--ink); }
+.d-val { text-align: right; font-size: 12px; }
+.legend.toggles button { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; font-size: 12px; color: var(--muted); }
+.legend.toggles button:hover { background: var(--etch-strong); }
+.legend.toggles button.off { opacity: 0.4; text-decoration: line-through; }
+.legend.toggles b { color: var(--ink); }
+.split3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 1100px) { .split3 { grid-template-columns: 1fr; } }
+
+
+/* ---------- window buttons (the native title bar is off) ---------- */
+.winbtns { display: inline-flex; margin-left: 6px; }
+.winbtns button { width: 44px; height: 36px; display: grid; place-items: center; border-radius: 10px; color: var(--muted); transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.winbtns button:hover { background: var(--etch-strong); color: var(--ink); }
+.winbtns button.close:hover { background: color-mix(in oklab, var(--neg-signal) 70%, transparent); color: #fff; }
+.winbtns svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
+
+/* ---------- larger, more modern type ---------- */
+.verdict { font-size: 21px; }
+.g-val { font-size: clamp(36px, 4vw, 52px); }
+.tabsbar button { font-size: 14px; height: 32px; }
+.lbl { font-size: 10px; }
+.panel-h .lbl { font-size: 10.5px; }
+
+/* ---------- hover: colour only (no glow, no lift, nothing moves) ---------- */
+html[data-fx-hover='on'] .seg button:hover:not(:disabled):not(.on), html[data-fx-hover='on'] .chip:hover:not(:disabled):not(.on), html[data-fx-hover='on'] .lvl:hover:not(:disabled):not(.on) { color: var(--ink); background: color-mix(in oklab, var(--ink) 7%, transparent); }
+html[data-fx-hover='on'] .procs li:hover .p-name { color: var(--ink); }
+
+/* ---------- press: a click you can feel ---------- */
+button { position: relative; overflow: hidden; }
+html[data-fx-press='on'] button:active:not(:disabled) { transform: scale(0.97); transition: transform 80ms var(--ease); }
+html[data-fx-press='on'] button.rippling::after { content: ''; position: absolute; left: var(--rx); top: var(--ry); width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: currentColor; opacity: 0.28; pointer-events: none; animation: ripple 520ms var(--ease) forwards; }
+@keyframes ripple { to { transform: scale(26); opacity: 0; } }
+
+/* ---------- settings switches ---------- */
+.toggles-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; margin-top: 14px; }
+.switch { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; pointer-events: none; }
+.switch .sw { flex: none; width: 38px; height: 22px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); position: relative; transition: background var(--dur-base) var(--ease); margin-top: 1px; }
+.switch .sw::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform var(--dur-base) var(--ease), background var(--dur-base) var(--ease); }
+.switch input:checked + .sw { background: var(--signal); box-shadow: var(--raised); }
+.switch input:checked + .sw::after { transform: translateX(16px); background: var(--signal-ink); }
+.switch input:focus-visible + .sw { outline: 2px solid var(--focus); outline-offset: 2px; }
+.switch b { display: block; font-weight: 600; }
+.switch small { display: block; }
+.small-btn { height: 28px; padding: 0 12px; font-size: 12px; white-space: nowrap; }
+
+/* ---------- glass on the canvas (owner, 2026-11-09): no boxes, one tone, depth from light and shadow ----------
+   Everything sits on the canvas colour. Panels are see-through (a 2–3 % ink veil plus a blur of whatever is
+   behind), with a bevel: a lit top lip, a dark bottom lip and a soft drop. Tracks are pressed in, the selected
+   control is lifted; neither changes colour. Data (gauge arcs, chart lines, warnings) keeps its colour. */
+:root {
+  --glass: color-mix(in oklab, var(--ink) 2.5%, transparent);
+  --glass-up: color-mix(in oklab, var(--ink) 8%, transparent);
+  --hi: color-mix(in oklab, white 7%, transparent);
+  --lo: oklch(0 0 0 / 0.42);
+  --bevel: inset 0 1px 0 var(--hi), inset 0 -1px 0 var(--lo), 0 1px 2px oklch(0 0 0 / 0.18), 0 18px 40px -22px oklch(0 0 0 / 0.7);
+  --sunk: inset 0 1px 2px oklch(0 0 0 / 0.38), inset 0 -1px 0 var(--hi);
+  --lift: inset 0 1px 0 color-mix(in oklab, white 11%, transparent), inset 0 -1px 0 oklch(0 0 0 / 0.3), 0 2px 6px -1px oklch(0 0 0 / 0.45);
+}
+[data-theme='light'] {
+  --hi: color-mix(in oklab, white 85%, transparent);
+  --lo: oklch(0 0 0 / 0.07);
+  --bevel: inset 0 1px 0 var(--hi), inset 0 -1px 0 var(--lo), 0 1px 2px oklch(0 0 0 / 0.06), 0 16px 34px -22px oklch(0 0 0 / 0.28);
+  --sunk: inset 0 1px 2px oklch(0 0 0 / 0.10), inset 0 -1px 0 var(--hi);
+  --lift: inset 0 1px 0 white, inset 0 -1px 0 oklch(0 0 0 / 0.06), 0 2px 5px -1px oklch(0 0 0 / 0.16);
+  --glass-up: color-mix(in oklab, white 70%, transparent);
+}
+[data-theme='gray'] { --hi: color-mix(in oklab, white 9%, transparent); --lo: oklch(0 0 0 / 0.32); }
+
+.panel, .hero { background: var(--glass); border: 0; box-shadow: var(--bevel); backdrop-filter: blur(14px) saturate(1.05); }
+.topbar { background: transparent; border-bottom: 0; box-shadow: 0 1px 0 var(--lo), 0 2px 0 var(--hi); }
+.note { background: var(--glass); border: 0; box-shadow: var(--bevel), inset 3px 0 0 var(--caution-signal); }
+.mcard { background: transparent; border: 0; box-shadow: var(--bevel); }
+.mcard:hover:not(:disabled) { border: 0; }
+.mcard.on, .mcard.on:hover:not(:disabled) { background: var(--glass-up); color: var(--ink); box-shadow: var(--lift); }
+.mcard.on small { color: var(--muted); }
+.mcard.on b::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ink); margin-right: 7px; vertical-align: 2px; }
+
+/* pressed-in tracks, all the same see-through tone */
+.tabsbar, .seg, .themes, .tabs, .pill, .chip, .lvl, .p-bar, .d-bar, .battery .cell, .glow-strip, select, input[type='range'], .switch .sw, code {
+  background: var(--glass); border: 0; box-shadow: var(--sunk);
+}
+/* the selected control lifts out of its track; no colour change */
+.tabsbar button.on, .seg button.on, .seg button.on:hover:not(:disabled), .themes button.on, .tabs button.on, .chip.on, .lvl.on, .lvl.on:hover:not(:disabled), .btn {
+  background: var(--glass-up); color: var(--ink); box-shadow: var(--lift);
+}
+.switch input:checked + .sw { background: var(--glass-up); box-shadow: var(--sunk); }
+.switch .sw::after { background: var(--muted); box-shadow: var(--lift); }
+.switch input:checked + .sw::after { background: var(--ink); }
+.gmode { background: transparent; border: 0; box-shadow: var(--bevel); }
+.gmode.on { background: var(--glass-up); border: 0; box-shadow: var(--lift); }
+.r-well { fill: transparent; }
+.r-ring { stroke: color-mix(in oklab, var(--ink) 8%, transparent); }
+.r-hub { fill: var(--canvas); stroke: color-mix(in oklab, var(--ink) 14%, transparent); }
+.role { border: 0; box-shadow: var(--sunk); }
+.drift + .drift { border-top: 0; box-shadow: 0 -1px 0 var(--lo), 0 -2px 0 var(--hi) inset; }
+
+/* floating read-outs: frosted, bevelled */
+.chart-tip, .tip::after { background: color-mix(in oklab, var(--canvas) 72%, transparent); border: 0; box-shadow: var(--bevel); backdrop-filter: blur(18px) saturate(1.1); }

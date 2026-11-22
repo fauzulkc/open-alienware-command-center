@@ -1,0 +1,34 @@
+[package]
+name = "alien-cockpit"
+version.workspace = true
+edition.workspace = true
+
+# Alien Cockpit OSS: the standalone app for the Alienware x17 R2 (docs/plans/x17-standalone-app.md). It
+# talks to the firmware through the hardware service (or directly when run as admin). Mode switching is on;
+# fan control stays locked until it passes its tests.
+
+[lib]
+name = "alien_cockpit_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+wiregent-hw = { path = "../../crates/hw" }
+wiregent-oem-alienware = { path = "../../crates/oem-alienware" }
+sysinfo = "0.32"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_Input", "Win32_UI_WindowsAndMessaging", "Win32_System_SystemInformation", "Win32_System_Power", "Win32_UI_Shell"] }
+
+[dev-dependencies]
+tempfile.workspace = true
