@@ -1,5 +1,6 @@
 //! The pipe end to end on Windows, with the replay firmware (no admin, no hardware): the handshake and
-//! readings, refusal of other users and of bad frames, the server identity check, and name squatting.
+//! readings, refusal of other users and of bad frames, the server identity check (name and service process),
+//! the pipe's ACL, a client dribbling bytes, and name squatting.
 #![cfg(windows)]
 
 use std::io::{Read, Write};
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 use wiregent_hw::replay::Replay;
 use wiregent_hw_service::controller::{Controller, Shared};
 use wiregent_hw_service::identity::{client_images, sddl, Policy};
-use wiregent_hw::client::request;
+use wiregent_hw::client::{request, request_checked, ServerCheck};
 use wiregent_hw_service::pipe::{self, ServerConfig};
 use wiregent_hw_service::proto::{self, Request, Response};
 use wiregent_hw_service::Answers;
@@ -118,6 +119,127 @@ fn the_client_checks_who_serves_the_pipe() {
     let srv = server(&pipe::current_sid().unwrap());
     let err = request(&srv.name, &Request::Snapshot, "wiregent-hw.exe").unwrap_err();
     assert!(format!("{err:#}").contains("refusing to talk"), "{err:#}");
+    srv.finish();
+}
+
+/// C-19: in production the server must also be the service's own process (the pid the service manager
+/// reports), not just a program with the service's name. Here the "service" is this test process.
+#[test]
+fn the_client_requires_the_services_own_process() {
+    let srv = server(&pipe::current_sid().unwrap());
+    let (me, mine) = (me(), std::process::id());
+    let ok = request_checked(&srv.name, &Request::Snapshot, &ServerCheck::Service { image: &me, pid: &|| Ok(mine) }).unwrap();
+    assert!(matches!(ok, Response::Snapshot { snapshot: Some(_), .. }), "the matching process is accepted: {ok:?}");
+    let err = request_checked(&srv.name, &Request::Snapshot, &ServerCheck::Service { image: &me, pid: &|| Ok(mine + 4) }).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains(&format!("is served by process {mine}")) && msg.contains(&format!("but the hardware service is process {}", mine + 4)) && msg.contains("another program holds the pipe, refusing to talk to it"), "{msg}");
+    let err = request_checked(&srv.name, &Request::Snapshot, &ServerCheck::Service { image: &me, pid: &|| anyhow::bail!("the hardware service isn't running") }).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("the hardware service's own process can't be confirmed (the hardware service isn't running): refusing to talk to it"), "{msg}");
+    srv.finish();
+}
+
+/// Opens the pipe as a raw client with `access`.
+fn raw(name: &str, access: u32) -> std::fs::File {
+    let w: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    let h = unsafe {
+        windows::Win32::Storage::FileSystem::CreateFileW(
+            windows::core::PCWSTR(w.as_ptr()),
+            access,
+            windows::Win32::Storage::FileSystem::FILE_SHARE_MODE(0),
+            None,
+            windows::Win32::Storage::FileSystem::OPEN_EXISTING,
+            Default::default(),
+            None,
+        )
+    }
+    .unwrap();
+    unsafe { std::fs::File::from_raw_handle(h.0) }
+}
+
+/// C-17/C-18: the pipe the server creates carries exactly the SDDL's DACL: protected (nothing inherited),
+/// SYSTEM full control, the owner read and write, and no other entry (no Everyone, Interactive,
+/// Authenticated Users, Administrators or anonymous read, which a pipe's default DACL has).
+#[test]
+fn the_pipes_dacl_is_system_full_and_the_owner_read_write_only() {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::{HANDLE, HLOCAL, LocalFree, ERROR_SUCCESS};
+    use windows::Win32::Security::Authorization::{ConvertSidToStringSidW, GetSecurityInfo, SE_KERNEL_OBJECT};
+    use windows::Win32::Security::{GetAce, GetSecurityDescriptorControl, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, INHERITED_ACE, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED};
+    const ACCESS_ALLOWED_ACE_TYPE: u32 = 0; // winnt.h
+    let sid = pipe::current_sid().unwrap();
+    let srv = server(&sid);
+    let f = raw(&srv.name, windows::Win32::Storage::FileSystem::READ_CONTROL.0);
+    let mut aces = Vec::new();
+    let (protected, null_dacl);
+    unsafe {
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        let err = GetSecurityInfo(HANDLE(f.as_raw_handle()), SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, None, None, Some(&mut dacl), None, Some(&mut sd));
+        assert_eq!(err, ERROR_SUCCESS, "reading the pipe's security descriptor");
+        let (mut control, mut rev) = (0u16, 0u32);
+        GetSecurityDescriptorControl(sd, &mut control, &mut rev).unwrap();
+        protected = control & SE_DACL_PROTECTED.0 != 0;
+        null_dacl = dacl.is_null();
+        if !null_dacl {
+            for i in 0..(*dacl).AceCount as u32 {
+                let mut p = std::ptr::null_mut();
+                GetAce(dacl, i, &mut p).unwrap();
+                let hdr = &*(p as *const ACE_HEADER);
+                if hdr.AceType as u32 != ACCESS_ALLOWED_ACE_TYPE {
+                    aces.push((format!("ACE type {}", hdr.AceType), 0, hdr.AceFlags));
+                    continue;
+                }
+                let ace = &*(p as *const ACCESS_ALLOWED_ACE);
+                let mut s = windows::core::PWSTR::null();
+                ConvertSidToStringSidW(PSID(&ace.SidStart as *const u32 as *mut _), &mut s).unwrap();
+                aces.push((s.to_string().unwrap(), ace.Mask, hdr.AceFlags));
+                let _ = LocalFree(Some(HLOCAL(s.0.cast())));
+            }
+        }
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+    }
+    drop(f);
+    assert!(!null_dacl, "a NULL DACL lets everyone in");
+    assert!(protected, "the DACL must be protected from inheritance: {aces:#x?}");
+    assert!(aces.iter().all(|(_, _, flags)| *flags as u32 & INHERITED_ACE.0 == 0), "inherited entries: {aces:#x?}");
+    aces.sort();
+    // GA maps to FILE_ALL_ACCESS for a pipe, GRGW to FILE_GENERIC_READ | FILE_GENERIC_WRITE (no WRITE_DAC,
+    // WRITE_OWNER or DELETE for the owner).
+    let mut want = vec![("S-1-5-18".to_string(), 0x001F_01FF, 0u8), (sid.clone(), 0x0012_019F, 0u8)];
+    want.sort();
+    assert_eq!(aces, want, "exactly SYSTEM full and the owner read/write");
+    srv.finish();
+}
+
+/// The whole-frame deadline: a client that sends a frame header and then one byte every half second (each
+/// read well inside the 5 s idle timeout) is cut off about 5 s after its first byte, and other clients are
+/// served meanwhile.
+#[test]
+fn a_dribbling_client_is_cut_off_and_others_are_served() {
+    let srv = server(&pipe::current_sid().unwrap());
+    let g = windows::Win32::Foundation::GENERIC_READ.0 | windows::Win32::Foundation::GENERIC_WRITE.0;
+    let mut f = raw(&srv.name, g);
+    let start = Instant::now();
+    f.write_all(&100u32.to_le_bytes()).unwrap(); // a 100-byte body is coming, slowly
+    let mut served = false;
+    let cut = loop {
+        std::thread::sleep(Duration::from_millis(500));
+        if !served && start.elapsed() >= Duration::from_secs(1) {
+            let r = request(&srv.name, &Request::Snapshot, &me()).unwrap();
+            assert!(matches!(r, Response::Snapshot { snapshot: Some(_), .. }), "another client while the dribbler holds a slot: {r:?}");
+            served = true;
+        }
+        if f.write_all(b" ").and_then(|_| f.flush()).is_err() {
+            break start.elapsed();
+        }
+        assert!(start.elapsed() < Duration::from_secs(15), "still connected after 15 s: a dribbling client holds a slot");
+    };
+    assert!(served);
+    assert!(cut >= Duration::from_millis(4_500) && cut < Duration::from_secs(8), "cut off after {cut:?}, want about 5 s");
+    drop(f);
+    let r = request(&srv.name, &Request::Snapshot, &me()).unwrap();
+    assert!(matches!(r, Response::Snapshot { snapshot: Some(_), .. }), "{r:?}");
     srv.finish();
 }
 

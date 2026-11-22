@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { api, type Controls, type Point, type Settings, type Status } from './api';
 import { Mark, Tip } from './components';
 import { applyEffects, installEffects } from './fx';
+import { mergeHistory } from './logic';
 import { applyTheme, type Theme } from './theme';
 import { HealthView, History, Lighting, Overview, Performance, SettingsView } from './views';
 
@@ -15,10 +17,10 @@ const SOURCE: Record<string, { dot: string; text: string; long: string }> = {
   unavailable: { dot: 'off', text: 'Windows only', long: 'No firmware readings: start Alien Cockpit as administrator or install the hardware service. Windows-side numbers still show.' },
 };
 
-/** The window's own controls: the native title bar is off, so the whole top strip drags the window. */
+/** The window's own controls: the native title bar is off, so the whole top strip drags the window. The window
+ * module is loaded with the page, so the first click doesn't wait for it. */
 async function win(action: 'min' | 'max' | 'close') {
   if (!api.inApp) return;
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
   const w = getCurrentWindow();
   if (action === 'min') await w.minimize();
   if (action === 'max') await w.toggleMaximize();
@@ -32,29 +34,54 @@ export default function App() {
   const [controls, setControls] = useState<Controls | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const hist = useRef<Point[]>([]);
 
   useEffect(() => {
     installEffects();
     let live = true;
+    let busy = false;
+    // Once a second, only while the window is shown, one poll at a time, and only the new chart points.
     const tick = async () => {
+      if (busy || document.hidden) return;
+      busy = true;
       try {
-        const [s, h, c] = await Promise.all([api.status(), api.history(), api.controls()]);
-        if (live) { setStatus(s); setHistory(h); setControls(c); }
+        const last = hist.current[hist.current.length - 1]?.t;
+        const [s, h, c] = await Promise.all([api.status(), api.history(last), api.controls()]);
+        if (!live) return;
+        setStatus(s);
+        setControls(c);
+        const next = mergeHistory(hist.current, h);
+        if (next !== hist.current) { hist.current = next; setHistory(next); }
       } catch (e) {
         if (live) setError(String(e));
+      } finally {
+        busy = false;
       }
     };
     tick();
     const id = setInterval(tick, 1000);
+    const onShow = () => { if (!document.hidden) tick(); };
+    document.addEventListener('visibilitychange', onShow);
     api.settings().then((s) => { setSettings(s); applyTheme(s.theme as Theme); applyEffects(s.effects); });
-    return () => { live = false; clearInterval(id); };
+    return () => { live = false; clearInterval(id); document.removeEventListener('visibilitychange', onShow); };
   }, []);
 
+  // Shown at once; if the app refuses the change (an invalid value, or the sign-in task can't be set up), the
+  // screen goes back to what is actually saved, with the reason.
+  const saved = useRef<Settings | null>(null);
+  useEffect(() => { if (settings && !saved.current) saved.current = settings; }, [settings]);
   const save = useCallback((s: Settings) => {
     setSettings(s);
     applyTheme(s.theme as Theme);
     applyEffects(s.effects);
-    api.saveSettings(s).then(setSettings, (e) => setError(String(e)));
+    api.saveSettings(s).then(
+      (ok) => { saved.current = ok; setSettings(ok); setError(null); },
+      (e) => {
+        setError(String(e));
+        const back = saved.current;
+        if (back) { setSettings(back); applyTheme(back.theme as Theme); applyEffects(back.effects); }
+      },
+    );
   }, []);
 
   const src = SOURCE[status?.source ?? 'unavailable'];

@@ -53,6 +53,16 @@ export function fanFlag(f: Fan, s: Snapshot, stuck: number[]): { flag?: 'stopped
   return {};
 }
 
+/** The chart history the window keeps: new points appended, at most `cap` kept. A first point older than the
+ * newest kept one means the app restarted its clock: start over from what came. Returns `prev` itself when
+ * nothing changed, so React doesn't redraw the charts for nothing. */
+export function mergeHistory<P extends { t: number }>(prev: P[], incoming: P[], cap = 600): P[] {
+  if (incoming.length === 0) return prev;
+  const last = prev[prev.length - 1]?.t;
+  const base = last != null && incoming[0].t <= last ? [] : prev;
+  return [...base, ...incoming].slice(-cap);
+}
+
 /** AWCC's names for the fans: CPU zone 1, CPU zone 2, GPU zone 1… numbered per sensor in id order. */
 export function zoneName(fans: Fan[], f: Fan): string {
   const same = fans.filter((x) => x.sensor === f.sensor).map((x) => x.id).sort((a, b) => a - b);

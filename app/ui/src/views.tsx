@@ -155,7 +155,7 @@ export function Performance({ status, history, controls, settings, save }: { sta
             <label className="field"><span className="lbl">Key does</span>
               <select value={settings.boostKey} onChange={(e) => save({ ...settings, boostKey: e.target.value })}><option value="awcc">Toggle G-Mode</option><option value="cycle">Step through modes</option></select>
             </label>
-            <label className="field"><span className="lbl">After a restart, return to</span>
+            <label className="field"><span className="lbl">Back from G-Mode, when the mode before is unknown (after a restart)</span>
               <select value={settings.defaultProfile} onChange={(e) => save({ ...settings, defaultProfile: e.target.value })}>{['0xA3', '0xA0', '0xA1', '0xA4', '0xA5'].map((p) => <option key={p} value={p}>{PROFILE_NAMES[p]}</option>)}</select>
             </label>
           </div>
@@ -378,6 +378,11 @@ export function SettingsView({ settings, save, error }: { settings: Settings | n
           <input type="checkbox" checked={s.liveAdmin} onChange={(e) => save({ ...s, liveAdmin: e.target.checked })} />
           <span className="sw" aria-hidden />
           <span><b>Ask for admin at start</b><small className="muted">The Alienware firmware only answers administrators. Without the hardware service, Alien Cockpit restarts itself as administrator (one Windows prompt) so temperatures, fans and modes are live.</small></span>
+        </label>
+        <label className="switch">
+          <input type="checkbox" checked={!!s.autostart} onChange={(e) => save({ ...s, autostart: e.target.checked })} />
+          <span className="sw" aria-hidden />
+          <span><b>Start at sign-in</b><small className="muted">Starts in the tray when you sign in, as administrator without a prompt (a Task Scheduler task, set up once while Alien Cockpit runs as administrator). Turning it off removes the task.</small></span>
         </label>
       </Section>
       <Section title="Safety" className="span3">

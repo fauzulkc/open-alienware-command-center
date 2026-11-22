@@ -1,0 +1,25 @@
+[package]
+name = "alienfx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# AlienFX report builders for the Alienware x17 R2 lighting devices (API v4 zone controller, API v5 per-key
+# keyboard), ported from T-Troll's alien-tools (MIT, https://github.com/T-Troll/alien-tools). The builders are
+# pure: nothing in this crate writes to a device. The Windows-only `probe` module enumerates HID interfaces and
+# reads their capabilities with a query-only (access 0) handle; it sends no reports of any kind.
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem",
+  "Win32_Devices_HumanInterfaceDevice", "Win32_Devices_DeviceAndDriverInstallation",
+] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[[example]]
+name = "probe"
+path = "examples/probe.rs"

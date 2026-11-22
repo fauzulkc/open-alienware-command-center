@@ -1,6 +1,7 @@
 //! The named pipe (design §4). Server: first instance only, no remote clients, owner-only security
-//! descriptor, overlapped reads with a 5 s idle timeout, at most `max_instances` connections, and every
-//! client identified from its process before it is served. The client side is `wiregent_hw::client`.
+//! descriptor, overlapped reads with a 5 s idle timeout, a whole frame within 5 s of its first byte (a client
+//! dribbling bytes can't hold a connection), at most `max_instances` connections, and every client identified
+//! from its process before it is served. The client side is `wiregent_hw::client`.
 
 use crate::identity::Policy;
 use wiregent_hw::client::Client;
@@ -8,6 +9,7 @@ use wiregent_hw::proto::{self, Request, Response};
 use anyhow::{anyhow, bail, Context, Result};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, LocalFree, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, WAIT_TIMEOUT};
 use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
@@ -18,6 +20,9 @@ use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
 pub const IDLE_TIMEOUT_MS: u32 = 5_000;
+/// Once a frame's first byte arrives, the rest of it (header and body) must arrive within this. The idle
+/// timeout alone applies per read, so one byte every few seconds would hold a connection for ever.
+pub const FRAME_DEADLINE_MS: u64 = 5_000;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -61,6 +66,21 @@ impl Io {
         while got < buf.len() {
             let r = unsafe { ReadFile(self.h, Some(&mut buf[got..]), None, Some(&mut self.ov)) };
             let n = self.finish(r, timeout_ms)? as usize;
+            if n == 0 {
+                bail!("the client closed the pipe");
+            }
+            got += n;
+        }
+        Ok(())
+    }
+
+    /// Reads all of `buf` by `deadline`, however the bytes are spread out.
+    fn read_exact_by(&mut self, buf: &mut [u8], deadline: Instant) -> Result<()> {
+        let mut got = 0;
+        while got < buf.len() {
+            let Some(left) = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { bail!("past the deadline") };
+            let r = unsafe { ReadFile(self.h, Some(&mut buf[got..]), None, Some(&mut self.ov)) };
+            let n = self.finish(r, (left.as_millis() as u32).max(1))? as usize;
             if n == 0 {
                 bail!("the client closed the pipe");
             }
@@ -126,8 +146,15 @@ fn serve_client(h: HANDLE, policy: &Policy, handler: &Handler, log: &(dyn Fn(Str
     }
     loop {
         let mut header = [0u8; 4];
-        if io.read_exact(&mut header, IDLE_TIMEOUT_MS).is_err() {
+        if io.read_exact(&mut header[..1], IDLE_TIMEOUT_MS).is_err() {
             return Ok(()); // idle, or the client left
+        }
+        // The first byte is in: the whole frame has FRAME_DEADLINE_MS from here.
+        let deadline = Instant::now() + Duration::from_millis(FRAME_DEADLINE_MS);
+        let too_slow = |e: anyhow::Error| format!("pipe client {} didn't send a whole request within {} s ({e:#}): disconnected", client.pid, FRAME_DEADLINE_MS / 1_000);
+        if let Err(e) = io.read_exact_by(&mut header[1..], deadline) {
+            log(too_slow(e));
+            return Ok(());
         }
         let len = match proto::frame_len(header) {
             Ok(n) => n,
@@ -139,7 +166,10 @@ fn serve_client(h: HANDLE, policy: &Policy, handler: &Handler, log: &(dyn Fn(Str
             }
         };
         let mut body = vec![0u8; len];
-        io.read_exact(&mut body, IDLE_TIMEOUT_MS)?;
+        if let Err(e) = io.read_exact_by(&mut body, deadline) {
+            log(too_slow(e));
+            return Ok(());
+        }
         let resp = match proto::parse_request(&body) {
             Ok(req) => handler(&client, req),
             Err(err) => err,

@@ -3,6 +3,7 @@
 //! directly when it runs as admin. Thermal modes can be switched (gated, confirmed by read-back); fan boost,
 //! curves and lighting writes stay locked, with the reason, until they pass their tests.
 
+mod autostart;
 mod boostkey;
 mod elevate;
 mod games;
@@ -45,6 +46,8 @@ pub struct Settings {
     pub effects: Effects,
     /// Without the hardware service, restart as administrator at start (one UAC prompt) for live readings.
     pub live_admin: bool,
+    /// Start in the tray at sign-in, as administrator without a prompt (a Task Scheduler task). Off by default.
+    pub autostart: bool,
 }
 
 /// Interface effects, each on its own switch (Settings → Appearance).
@@ -69,7 +72,7 @@ impl Default for Effects {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { demo: false, emergency_c: 98, default_profile: "0xA0".into(), boost_key: "awcc".into(), fan_curves: Default::default(), game_modes: Default::default(), notify: true, theme: "dark".into(), log: log::LogSettings::default(), effects: Effects::default(), live_admin: true }
+        Settings { demo: false, emergency_c: 98, default_profile: "0xA0".into(), boost_key: "awcc".into(), fan_curves: Default::default(), game_modes: Default::default(), notify: true, theme: "dark".into(), log: log::LogSettings::default(), effects: Effects::default(), live_admin: true, autostart: false }
     }
 }
 
@@ -196,10 +199,12 @@ pub struct App {
     status_item: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
+// Commands the window polls run off the main thread (async): a sync command runs on the thread that also
+// moves, minimizes and maximizes the window, so a slow one makes the title bar lag.
 #[tauri::command]
-fn status(app: State<App>) -> Value {
+async fn status(app: State<'_, App>) -> Result<Value, String> {
     let st = app.readings.lock().unwrap();
-    json!({ "source": st.source, "snapshot": st.snapshot, "lists": st.lists, "power": st.power, "error": st.error, "ageMs": st.updated.map(|u| u.elapsed().as_millis() as u64), "energySaver": energy_saver(), "elevated": elevate::is_elevated() })
+    Ok(json!({ "source": st.source, "snapshot": st.snapshot, "lists": st.lists, "power": st.power, "error": st.error, "ageMs": st.updated.map(|u| u.elapsed().as_millis() as u64), "energySaver": energy_saver(), "elevated": elevate::is_elevated() }))
 }
 
 /// Whether Windows Energy Saver (battery saver) is on: Windows then caps CPU power, so thermal modes
@@ -226,9 +231,19 @@ fn restart_elevated(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// The chart history: everything, or only the points after `after` (the newest `t` the window already has),
+/// so the once-a-second poll carries one or two points instead of all 600.
 #[tauri::command]
-fn history(app: State<App>) -> Value {
-    serde_json::to_value(&app.readings.lock().unwrap().history).unwrap_or_default()
+async fn history(app: State<'_, App>, after: Option<u64>) -> Result<Value, String> {
+    let st = app.readings.lock().unwrap();
+    Ok(serde_json::to_value(points_after(&st.history, after)).unwrap_or_default())
+}
+
+pub fn points_after(history: &std::collections::VecDeque<source::Point>, after: Option<u64>) -> Vec<&source::Point> {
+    match after {
+        None => history.iter().collect(),
+        Some(t) => history.iter().filter(|p| p.t > t).collect(),
+    }
 }
 
 #[tauri::command]
@@ -255,7 +270,7 @@ async fn drift() -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn lighting() -> Value {
+async fn lighting() -> Value {
     match lighting::read(&lighting::awcc_db()) {
         Ok(devices) => json!({ "devices": devices }),
         Err(e) => json!({ "devices": [], "error": format!("{e:#}") }),
@@ -263,18 +278,22 @@ fn lighting() -> Value {
 }
 
 #[tauri::command]
-fn game_library() -> Value {
+async fn game_library() -> Value {
     serde_json::to_value(games::read()).unwrap_or_default()
 }
 
 #[tauri::command]
-fn settings_get(app: State<App>) -> Settings {
-    app.settings.lock().unwrap().clone()
+async fn settings_get(app: State<'_, App>) -> Result<Settings, String> {
+    Ok(app.settings.lock().unwrap().clone())
 }
 
 #[tauri::command]
-fn settings_set(app: State<App>, settings: Settings) -> Result<Settings, String> {
+async fn settings_set(app: State<'_, App>, settings: Settings) -> Result<Settings, String> {
     settings.validate()?;
+    let before = app.settings.lock().unwrap().autostart;
+    if settings.autostart != before {
+        autostart::set(settings.autostart)?;
+    }
     settings.save()?;
     *app.demo.lock().unwrap() = settings.demo;
     *app.settings.lock().unwrap() = settings.clone();
@@ -374,7 +393,77 @@ fn write_fan_boost(modes: &Mutex<Modes>, fan: u8, level: u8) -> Result<Value, St
     } else {
         m.boosted.insert(fan, level);
     }
+    m.persist();
     Ok(change)
+}
+
+/// What this app has raised, kept on disk while anything is raised, so a crash or a kill can't leave fans
+/// raised for good: the next start puts them back (see `recover_raised`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Raised {
+    pub fans: std::collections::BTreeMap<u8, u8>,
+    /// The emergency rule had every fan at full.
+    pub emergency: bool,
+}
+
+impl Raised {
+    fn path() -> std::path::PathBuf {
+        dirs::config_dir().unwrap_or_default().join("Alien Cockpit OSS").join("raised.json")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fans.is_empty() && !self.emergency
+    }
+
+    /// Written while something is raised; removed when nothing is.
+    pub fn save_to(&self, p: &std::path::Path) -> std::io::Result<()> {
+        if self.is_empty() {
+            return match std::fs::remove_file(p) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            };
+        }
+        std::fs::create_dir_all(p.parent().unwrap())?;
+        let tmp = p.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(self).unwrap())?;
+        std::fs::rename(&tmp, p)
+    }
+
+    pub fn load_from(p: &std::path::Path) -> Option<Raised> {
+        std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Raised>(&t).ok()).filter(|r| !r.is_empty())
+    }
+}
+
+impl Modes {
+    fn raised(&self) -> Raised {
+        Raised { fans: self.boosted.clone(), emergency: self.emergency_active() }
+    }
+
+    fn persist(&self) {
+        let _ = self.raised().save_to(&Raised::path());
+    }
+}
+
+/// At start: fans a previous run raised and never put back (it crashed or was killed) go back to the
+/// firmware's curve. The emergency rule re-engages within 5 s if it's still needed. Returns what was done.
+fn recover_raised(modes: &Mutex<Modes>) -> Option<String> {
+    let left = Raised::load_from(&Raised::path())?;
+    let errors: Vec<String> = if left.emergency && mode_route() == Ok("direct") {
+        (|| -> Result<Vec<String>, String> {
+            let fw = wiregent_hw::wmi::Awcc::open().map_err(|e| format!("{e:#}"))?;
+            let d = wiregent_oem_alienware::Discovery::run(|c| wiregent_hw::Firmware::read(&fw, c).ok()).map_err(|e| e.to_string())?;
+            Ok(wiregent_hw::control::reset_fans(&fw, &d))
+        })()
+        .unwrap_or_else(|e| vec![e])
+    } else {
+        left.fans.keys().filter_map(|f| write_fan_boost(modes, *f, 0).err()).collect()
+    };
+    if errors.is_empty() {
+        let _ = Raised::default().save_to(&Raised::path());
+        Some("Fans raised before Alien Cockpit last stopped unexpectedly are back on the firmware's own curve.".into())
+    } else {
+        Some(format!("Fans raised before Alien Cockpit last stopped unexpectedly couldn't all be put back: {}", errors.join("; ")))
+    }
 }
 
 /// Raises every listed fan to `level` (0 puts them back on the firmware's curve).
@@ -391,7 +480,9 @@ fn reset_boost(modes: &Mutex<Modes>) {
     if modes.lock().unwrap().emergency_active() && mode_route() == Ok("direct") {
         if let Ok(fw) = wiregent_hw::wmi::Awcc::open() {
             if let Ok(d) = wiregent_oem_alienware::Discovery::run(|c| wiregent_hw::Firmware::read(&fw, c).ok()) {
-                let _ = wiregent_hw::control::reset_fans(&fw, &d);
+                if wiregent_hw::control::reset_fans(&fw, &d).is_empty() {
+                    modes.lock().unwrap().boosted.clear();
+                }
             }
         }
         return;
@@ -402,8 +493,15 @@ fn reset_boost(modes: &Mutex<Modes>) {
     }
 }
 
+/// On quit, after `reset_boost`: nothing is raised any more, whatever the emergency rule's last state was.
+fn forget_raised(modes: &Mutex<Modes>) {
+    if modes.lock().unwrap().boosted.is_empty() {
+        let _ = Raised::default().save_to(&Raised::path());
+    }
+}
+
 #[tauri::command]
-fn log_days() -> Value {
+async fn log_days() -> Value {
     let days = log::days(&log::dir());
     let total: u64 = days.iter().map(|d| d.bytes).sum();
     json!({ "days": days, "totalBytes": total, "dir": log::dir() })
@@ -415,14 +513,14 @@ async fn log_read(day: String) -> Result<Vec<Value>, String> {
 }
 
 #[tauri::command]
-fn log_cleanup(app: State<App>) -> Vec<String> {
+async fn log_cleanup(app: State<'_, App>) -> Result<Vec<String>, String> {
     let s = app.settings.lock().unwrap().log.clone();
-    log::cleanup(&log::dir(), &log::today(), &s)
+    Ok(log::cleanup(&log::dir(), &log::today(), &s))
 }
 
 /// What each control can do right now, and why not when it can't.
 #[tauri::command]
-fn controls(app: State<App>) -> Value {
+async fn controls(app: State<'_, App>) -> Result<Value, String> {
     let st = app.readings.lock().unwrap();
     let mut fan_notes = vec!["Boost only adds to the firmware's own curve, so it can't make a fan slower; it goes back to 0 when Alien Cockpit quits. Custom curves stay saved-only until the boost has been checked on this laptop.".to_string()];
     let hot_at_low_power = st.history.iter().rev().take(60).filter(|p| p.cpu_c.is_some_and(|c| c >= 95) && p.cpu_w.is_some_and(|w| w <= 35.0)).count();
@@ -442,12 +540,12 @@ fn controls(app: State<App>) -> Value {
     if emergency {
         fan_reasons.push(EMERGENCY_HOLD.into());
     }
-    json!({
+    Ok(json!({
         "emergency": { "active": emergency, "triggerC": m.emergency.as_ref().map(|r| r.trigger_c()), "releaseC": m.emergency.as_ref().map(|r| r.release_c) },
         "modes": { "enabled": modes_ok, "route": route.ok(), "reasons": mode_reasons, "last": m.last },
         "fans": { "enabled": modes_ok && !emergency, "reasons": fan_reasons, "notes": fan_notes, "boosted": m.boosted.iter().map(|(f, l)| (format!("0x{f:02X}"), *l)).collect::<std::collections::BTreeMap<_, _>>() },
         "lighting": { "enabled": false, "reasons": ["Writing lighting needs the lighting protocol port and a test on this keyboard. The firmware keeps the current colours."] },
-    })
+    }))
 }
 
 #[tauri::command]
@@ -529,10 +627,17 @@ pub fn run() {
             if let Err(e) = install_tray(app.handle()) {
                 eprintln!("tray icon unavailable: {e}");
             }
+            // Started by the sign-in task: tray only. Closing the window frees its web view; the tray reopens it.
+            if autostart::started_at_sign_in(&args) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.close();
+                }
+            }
             let handle = app.handle().clone();
             let (r, d) = (readings.clone(), demo.clone());
             std::thread::spawn(move || {
                 let (h, h2) = (handle.clone(), handle.clone());
+                let recovered = std::sync::atomic::AtomicBool::new(false);
                 source::run(
                     r,
                     d,
@@ -544,6 +649,15 @@ pub fn run() {
                     // The emergency rule, when this app talks to the firmware itself. The hardware service runs
                     // its own; demo data never writes.
                     move |src, t, snapshot| {
+                        // Once, as soon as the firmware is reachable: undo what a crashed run left raised.
+                        if matches!(src, source::Source::Direct | source::Source::Service) && !recovered.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            let (modes, h3) = (h2.state::<App>().modes.clone(), h2.clone());
+                            std::thread::spawn(move || {
+                                if let Some(text) = recover_raised(&modes) {
+                                    let _ = h3.notification().builder().title("Alien Cockpit OSS").body(&text).show();
+                                }
+                            });
+                        }
                         if src != source::Source::Direct {
                             return;
                         }
@@ -553,6 +667,9 @@ pub fn run() {
                         let (decision, person, release_c) = {
                             let mut m = app.modes.lock().unwrap();
                             let d = emergency_step(&mut m, trigger, t, hot);
+                            if d.is_some() {
+                                m.persist();
+                            }
                             (d, m.boosted.clone(), m.emergency.as_ref().map(|r| r.release_c).unwrap_or(92))
                         };
                         if let Some(e) = decision {
@@ -639,7 +756,11 @@ pub fn run() {
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
             // Quitting: any fan this app raised goes back to the firmware's own curve.
-            tauri::RunEvent::Exit => reset_boost(&app.state::<App>().modes),
+            tauri::RunEvent::Exit => {
+                let modes = &app.state::<App>().modes;
+                reset_boost(modes);
+                forget_raised(modes);
+            }
             _ => {}
         });
 }
@@ -694,6 +815,46 @@ mod tests {
         std::fs::write(&p, br#"{ "emergencyC": 88, "someFutureSetting": true }"#).unwrap();
         let l = Settings::load_from(&p);
         assert_eq!((l.emergency_c, l.theme.as_str()), (88, "dark"), "unknown fields ignored, missing ones defaulted");
+    }
+
+    /// The window's poll asks only for points it doesn't have yet.
+    #[test]
+    fn history_is_sent_incrementally() {
+        let p = |t: u64| source::Point { t, at: 0, cpu_c: None, gpu_c: None, cpu_w: None, fans: vec![], profile: None, ram_gb: 0.0, cpu_pct: 0.0, gpu_pct: None, net_kbps: None, top: Default::default() };
+        let h: std::collections::VecDeque<_> = [1_000, 2_600, 4_200].into_iter().map(p).collect();
+        assert_eq!(points_after(&h, None).len(), 3, "the first poll gets everything");
+        assert_eq!(points_after(&h, Some(2_600)).iter().map(|x| x.t).collect::<Vec<_>>(), vec![4_200]);
+        assert!(points_after(&h, Some(4_200)).is_empty(), "nothing new");
+    }
+
+    /// The record of raised fans exists exactly while something is raised, so a crash leaves it behind and a
+    /// clean quit doesn't.
+    #[test]
+    fn raised_fans_are_recorded_while_raised_and_forgotten_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("raised.json");
+        assert_eq!(Raised::load_from(&p), None);
+        let r = Raised { fans: [(0x33u8, 60u8)].into_iter().collect(), emergency: false };
+        r.save_to(&p).unwrap();
+        assert_eq!(Raised::load_from(&p), Some(r));
+        let e = Raised { fans: Default::default(), emergency: true };
+        e.save_to(&p).unwrap();
+        assert_eq!(Raised::load_from(&p), Some(e), "the emergency alone is worth remembering");
+        Raised::default().save_to(&p).unwrap();
+        assert!(!p.exists(), "nothing raised: no record");
+        Raised::default().save_to(&p).unwrap();
+        std::fs::write(&p, b"garbage").unwrap();
+        assert_eq!(Raised::load_from(&p), None, "an unreadable record is ignored");
+    }
+
+    #[test]
+    fn modes_know_what_they_raised() {
+        let mut m = Modes::default();
+        m.boosted.insert(0x32, 40);
+        for i in 0..=5 {
+            emergency_step(&mut m, 98, i * 1_000, Some(99));
+        }
+        assert_eq!(m.raised(), Raised { fans: [(0x32u8, 40u8)].into_iter().collect(), emergency: true });
     }
 
     #[test]

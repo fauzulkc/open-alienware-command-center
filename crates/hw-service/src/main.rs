@@ -43,7 +43,7 @@ mod win {
     use wiregent_hw_service::pipe::{self, ServerConfig};
     use wiregent_hw_service::{proto, Answers};
 
-    const SERVICE: &str = "wiregent-hw";
+    const SERVICE: &str = wiregent_hw::client::SERVICE_NAME;
 
     pub struct Options {
         pub pipe: String,
@@ -73,7 +73,7 @@ mod win {
                 wiregent_hw::wmi::Awcc::open().and_then(|fw| Controller::with_gate(Box::new(fw) as Fw, c_shared.clone(), ok))
             };
             match built {
-                Ok(c) => c.run(now),
+                Ok(c) => c.with_audit(c_log.clone()).run(now),
                 Err(e) => c_log(format!("firmware unavailable, serving no readings: {e:#}")),
             }
         });
@@ -93,7 +93,8 @@ mod win {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
         });
-        let answers = Arc::new(Answers::new(shared.clone(), Box::new(|| serde_json::to_value(wiregent_hw::health::read(30)).unwrap_or_default()), Box::new(now)));
+        // Every write, the clients' and the service's own, is one line in this log (C-03/C-04).
+        let answers = Arc::new(Answers::new(shared.clone(), Box::new(|| serde_json::to_value(wiregent_hw::health::read(30)).unwrap_or_default()), Box::new(now)).with_audit(log.clone()));
         let cfg = ServerConfig { name: opts.pipe, sddl: sddl(&opts.owner_sid).map_err(anyhow::Error::msg)?, policy: Policy { owner_sid: opts.owner_sid, dirs: opts.dirs, any_dir: opts.any_dir, images: wiregent_hw_service::identity::client_images() }, max_instances: 4 };
         let a = answers.clone();
         pipe::serve(cfg, Arc::new(move |c, r| a.answer(c, r)), Arc::new(StopFlag(shared.clone())).flag(), log)

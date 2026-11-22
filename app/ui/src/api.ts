@@ -19,7 +19,7 @@ export interface Drift { service: string; expected: string[]; actual: string; ru
 export interface LightGroup { leds: number[]; effect: number; brightness: number; colors: string[] }
 export interface LightDevice { device: string; preset: string; groups: LightGroup[]; power_states: string[] }
 export interface LogSettings { enabled: boolean; everyS: number; keepDays: number; maxMb: number }
-export interface Settings { demo: boolean; emergencyC: number; defaultProfile: string; boostKey: string; fanCurves: Record<string, [number, number][]>; gameModes: Record<string, string>; notify: boolean; theme: string; log: LogSettings; effects: Effects; liveAdmin: boolean }
+export interface Settings { demo: boolean; emergencyC: number; defaultProfile: string; boostKey: string; fanCurves: Record<string, [number, number][]>; gameModes: Record<string, string>; notify: boolean; theme: string; log: LogSettings; effects: Effects; liveAdmin: boolean; autostart?: boolean }
 export interface Effects { motion: boolean; hover: boolean; press: boolean; largeText: boolean }
 export interface ControlState { enabled: boolean; reasons: string[]; route?: string | null; last?: ModeChange | null; notes?: string[]; boosted?: Record<string, number> }
 export interface BoostChange { fan: string; level: number; before: number | null; after: number | null; rpm_before: number | null; rpm_after: number | null; confirmed: boolean }
@@ -60,7 +60,7 @@ function demoSnap(): Snapshot {
   const p = demoHistory[demoHistory.length - 1];
   return { t_ms: p.t, sensors: [{ id: 1, name: 'CPU', celsius: p.cpu_c, stale: false }, { id: 6, name: 'GPU', celsius: p.gpu_c, stale: false }], fans: [{ id: 0x32, sensor: 1, rpm: p.fans[0], max_rpm: 4200 }, { id: 0x33, sensor: 6, rpm: p.fans[1], max_rpm: 4100 }, { id: 0x3b, sensor: 1, rpm: 0, max_rpm: 3000 }, { id: 0x3c, sensor: 6, rpm: p.fans[3], max_rpm: 3000 }], profile: demoProfile.id, profile_name: NAMES[demoProfile.id], alerts: [] };
 }
-let demoSettings: Settings = { demo: true, emergencyC: 98, defaultProfile: '0xA0', boostKey: 'awcc', fanCurves: {}, gameModes: {}, notify: true, theme: 'dark', log: { enabled: true, everyS: 30, keepDays: 14, maxMb: 200 }, liveAdmin: true, effects: { motion: false, hover: true, press: true, largeText: true } };
+let demoSettings: Settings = { demo: true, emergencyC: 98, defaultProfile: '0xA0', boostKey: 'awcc', fanCurves: {}, gameModes: {}, notify: true, theme: 'dark', log: { enabled: true, everyS: 30, keepDays: 14, maxMb: 200 }, liveAdmin: true, autostart: false, effects: { motion: false, hover: true, press: true, largeText: true } };
 const demoBoost: Record<string, number> = {};
 let demoLast: ModeChange | null = null;
 const demo = {
@@ -69,7 +69,7 @@ const demo = {
     demoHistory.shift();
     return { source: 'demo', snapshot: demoSnap(), lists: { profiles: ['0xA3', '0xA0', '0xA1', '0xA4', '0xA5', '0xAB'], fans: ['0x32', '0x33', '0x3B', '0x3C'], sensors: ['0x01', '0x06'] }, power: { cpuPackageW: demoHistory[demoHistory.length - 1].cpu_w, cpuCoresW: 16, cpuPerformancePct: 88 }, error: null, ageMs: 400, energySaver: false };
   },
-  history: (): Point[] => demoHistory.slice(),
+  history: (after?: number): Point[] => demoHistory.filter((p) => after == null || p.t > after),
   health: (): Health => ({ battery: { design_mwh: 87005, full_mwh: 52201, wear_pct: 40, cycles: 98 }, disks: [], events: { days: 30, hardware_errors: 6, crashes: 0, unexpected_shutdowns: 0 }, unavailable: ['disk wear: access denied: Windows needs admin to read this'], findings: ['6 hardware error report(s) (WHEA) in the last 30 days.', 'The battery holds 40% less than when new (52201 of 87005 mWh).'] }),
   drift: () => ({ ok: false, drift: [{ service: 'DellTechHub', expected: ['Delayed'], actual: 'Auto', running: true, severity: 'high', why: 'Your rule: Automatic (Delayed Start).' }] as Drift[] }),
   lighting: () => ({ devices: [{ device: '0x0406_AdvCherryMechanicalKB', preset: 'System Default', groups: [{ leds: Array(19).fill(0), effect: 4, brightness: 100, colors: ['#FF00FF'] }, { leds: Array(12).fill(0), effect: 4, brightness: 100, colors: ['#2AAAFF'] }, { leds: Array(25).fill(0), effect: 4, brightness: 100, colors: ['#FFCDE9'] }, { leds: Array(10).fill(0), effect: 4, brightness: 100, colors: ['#6BFFB9'] }, { leds: Array(11).fill(0), effect: 4, brightness: 100, colors: ['#FFED87'] }], power_states: [] }, { device: '0x0406', preset: 'System Default', groups: [], power_states: ['DC - Sleep', 'DC - Working', 'DC - Low Battery', 'AC - Sleep', 'AC - Fully Charge', 'AC - Charging', 'Spectrum'] }] as LightDevice[], error: undefined as string | undefined }),
@@ -91,7 +91,8 @@ const demo = {
 export const api = {
   inApp,
   status: () => (inApp ? call<Status>('status') : Promise.resolve(demo.status())),
-  history: () => (inApp ? call<Point[]>('history') : Promise.resolve(demo.history())),
+  /** Chart points: all of them, or only those after `after` (the newest `t` the window already has). */
+  history: (after?: number) => (inApp ? call<Point[]>('history', { after: after ?? null }) : Promise.resolve(demo.history(after))),
   health: () => (inApp ? call<Health>('health') : Promise.resolve(demo.health())),
   drift: () => (inApp ? call<{ ok: boolean; drift: Drift[] }>('drift') : Promise.resolve(demo.drift())),
   lighting: () => (inApp ? call<{ devices: LightDevice[]; error?: string }>('lighting') : Promise.resolve(demo.lighting())),

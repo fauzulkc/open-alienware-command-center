@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Fan, Snapshot, Status } from './api';
-import { alertText, BLADES, drawnRevPerSec, fanFlag, MAX_DRAWN_REV_PER_S, MAX_FRAME_S, rotorPercent, stoppedZones, stuckFans, verdict, zoneName } from './logic';
+import { alertText, BLADES, drawnRevPerSec, fanFlag, MAX_DRAWN_REV_PER_S, MAX_FRAME_S, mergeHistory, rotorPercent, stoppedZones, stuckFans, verdict, zoneName } from './logic';
 
 // The x17 R2 as the reader reports it: sensor 0x01 (CPU) with fans 0x32 and 0x3B, sensor 0x06 (GPU) with 0x33 and 0x3C.
 const fan = (id: number, sensor: number, rpm: number | null, max = 4200): Fan => ({ id, sensor, rpm, max_rpm: max });
@@ -98,5 +98,23 @@ describe('alert wording', () => {
     expect(alertText({ kind: 'stuck-reading', fan: 0x3c, rpm: 3000 })).toContain('3000 RPM');
     expect(alertText({ kind: 'zone-stopped', sensor: 1 })).toMatch(/^Every CPU fan reads 0 RPM/);
     expect(alertText({ kind: 'sensor-stale', name: 'GPU' })).toContain('GPU');
+  });
+});
+
+describe('the chart history the window keeps', () => {
+  const pts = (...ts: number[]) => ts.map((t) => ({ t }));
+  it('appends only what is new and keeps the newest 600', () => {
+    expect(mergeHistory(pts(1, 2), pts(3)).map((p) => p.t)).toEqual([1, 2, 3]);
+    const full = pts(...Array.from({ length: 600 }, (_, i) => i + 1));
+    const next = mergeHistory(full, pts(601, 602));
+    expect(next.length).toBe(600);
+    expect([next[0].t, next[599].t]).toEqual([3, 602]);
+  });
+  it('returns the same array when nothing came, so the charts do not redraw', () => {
+    const prev = pts(1, 2);
+    expect(mergeHistory(prev, [])).toBe(prev);
+  });
+  it('starts over when the app restarted its clock', () => {
+    expect(mergeHistory(pts(5000, 6000), pts(100, 200)).map((p) => p.t)).toEqual([100, 200]);
   });
 });

@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+use crate::audit::{self, By};
 use wiregent_hw::control::{apply_emergency, reset_fans, set_fan_boost, set_profile, FirmwareWrite};
 use wiregent_hw::reader::Reader;
 use wiregent_hw::Firmware;
@@ -113,7 +115,7 @@ impl Shared {
     pub fn request_profile(&self, profile: u8) -> Receiver<Result<serde_json::Value, String>> {
         self.request(Cmd::Profile(profile))
     }
-    fn has_commands(&self) -> bool {
+    pub(crate) fn has_commands(&self) -> bool {
         !self.commands.lock().unwrap().is_empty()
     }
 }
@@ -135,6 +137,8 @@ pub struct Controller<F: FirmwareWrite> {
     stale_restored: bool,
     /// How many watchdog restores ran (published with the snapshot).
     restores: u64,
+    /// Where the service's own writes are logged, one line each (C-03/C-04).
+    audit: Option<audit::Sink>,
 }
 
 impl<F: FirmwareWrite> Controller<F> {
@@ -157,7 +161,21 @@ impl<F: FirmwareWrite> Controller<F> {
             guard_since: None,
             stale_restored: false,
             restores: 0,
+            audit: None,
         })
+    }
+
+    /// Logs every write the service makes on its own (emergency rule, watchdog restore, fan reset).
+    pub fn with_audit(mut self, sink: audit::Sink) -> Self {
+        self.audit = Some(sink);
+        self
+    }
+
+    fn log_own(&self, op: &str, value: &str, errors: &[String]) {
+        if let Some(a) = &self.audit {
+            let outcome = if errors.is_empty() { "ok".to_string() } else { format!("not all written: {}", errors.join("; ")) };
+            a(audit::line(SystemTime::now(), By::Service, op, value, &outcome));
+        }
     }
 
     /// Whether the emergency rule holds every fan at full right now.
@@ -172,26 +190,34 @@ impl<F: FirmwareWrite> Controller<F> {
             trip |= self.guard.write_result(ok);
         }
         if trip {
-            self.restore();
+            self.restore("5 failed writes in a row");
         }
     }
 
     /// The watchdog's restore: Balanced and boost 0 on every fan (`Discovery::restore`). Exempt from the rate
     /// limit, gated on the verified machine like every write. Its own failures still count, so a restore that
     /// fails keeps the count at the limit and the next failed write asks again.
-    fn restore(&mut self) {
+    fn restore(&mut self, why: &str) {
+        let value = format!("Balanced and every fan 0 ({why})");
         if !self.machine_ok {
+            self.log_own("watchdog-restore", &value, &["not written: this laptop's model or BIOS isn't verified".into()]);
             return;
         }
         let fw = self.reader.firmware();
+        let mut errors = Vec::new();
         for c in self.reader.discovery.restore() {
-            let _ = fw.write(c);
+            if let Err(e) = fw.write(c) {
+                errors.push(format!("{:#010X}: {e:#}", c.packed()));
+            }
         }
         // An engaged emergency outranks the restore's boost 0: the mode goes to Balanced, but the fans stay at
         // full until the rule releases (with no temperature to read, nothing would release it sooner).
-        if self.emergency.active() {
-            let _ = apply_emergency(fw, &self.reader.discovery, wiregent_oem_alienware::rules::Emergency::Engage, &BTreeMap::new(), self.machine_ok);
+        let held = self.emergency.active();
+        if held {
+            errors.extend(apply_emergency(fw, &self.reader.discovery, wiregent_oem_alienware::rules::Emergency::Engage, &BTreeMap::new(), self.machine_ok));
         }
+        self.log_own("watchdog-restore", &if held { format!("{value}, fans kept at full by the emergency rule") } else { value }, &errors);
+        let fw = self.reader.firmware();
         for ok in fw.take() {
             self.guard.write_result(ok);
         }
@@ -207,14 +233,19 @@ impl<F: FirmwareWrite> Controller<F> {
             self.guard.temperature_read(t_ms);
             self.stale_restored = false;
             if let Some(e) = self.emergency.push(t_ms, h) {
-                // Errors are counted by the watchdog through the tap; nothing else to do with them here.
-                let _ = apply_emergency(self.reader.firmware(), &self.reader.discovery, e, &self.person, self.machine_ok);
+                // Errors are counted by the watchdog through the tap, and logged.
+                let errors = apply_emergency(self.reader.firmware(), &self.reader.discovery, e, &self.person, self.machine_ok);
+                let (op, value) = match e {
+                    wiregent_oem_alienware::rules::Emergency::Engage => ("emergency-engage", format!("every fan {} (hottest sensor {h} °C)", wiregent_hw::control::EMERGENCY_BOOST)),
+                    wiregent_oem_alienware::rules::Emergency::Release => ("emergency-release", format!("each fan back to the person's boost {:?} (hottest sensor {h} °C)", self.person)),
+                };
+                self.log_own(op, &value, &errors);
                 self.note_writes();
             }
         }
         if !self.stale_restored && self.guard.stale(t_ms, since) {
             self.stale_restored = true;
-            self.restore();
+            self.restore("no temperature for 30 s");
         }
     }
 
@@ -250,7 +281,7 @@ impl<F: FirmwareWrite> Controller<F> {
             // Requests refused before any write (gate, rate limit, emergency) don't count either way.
             let writes = self.reader.firmware().take();
             if !writes.is_empty() && self.guard.write_result(confirmed && writes.iter().all(|ok| *ok)) {
-                self.restore();
+                self.restore("5 failed writes in a row");
             }
         }
     }
@@ -290,7 +321,9 @@ impl<F: FirmwareWrite> Controller<F> {
     /// Every fan back to the firmware's own curve (on stop, and when the service starts).
     pub fn reset_fans(&self) -> Vec<String> {
         if self.machine_ok {
-            reset_fans(self.reader.firmware(), &self.reader.discovery)
+            let errors = reset_fans(self.reader.firmware(), &self.reader.discovery);
+            self.log_own("reset-fans", "every fan 0 (the firmware's own curve)", &errors);
+            errors
         } else {
             Vec::new()
         }
@@ -625,6 +658,31 @@ mod tests {
         assert!(fw.replay.writes().is_empty(), "the clock starts at the first step");
         c.step(31_000);
         assert_eq!(fw.replay.writes(), restore_writes(&c));
+    }
+
+    /// C-03/C-04: each of the service's own writes (engage, release, the no-temperature restore, the fan
+    /// reset) is one log line, labelled as the service's own rather than any client's.
+    #[test]
+    fn safety_writes_are_logged_once_each_as_the_services_own() {
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let l = lines.clone();
+        let (c, fw) = bench();
+        let mut c = c.with_audit(Arc::new(move |m| l.lock().unwrap().push(m)));
+        run(&mut c, 0, 5_000);
+        fw.temp(Some(90));
+        run(&mut c, 6_000, 36_000);
+        assert!(!c.emergency_active());
+        fw.temp(None);
+        fw.replay.fail_op(OP_TEMPERATURE);
+        run(&mut c, 37_000, 80_000);
+        c.reset_fans();
+        let lines = lines.lock().unwrap().clone();
+        let ops: Vec<&str> = lines.iter().map(|l| l.split(" op=").nth(1).unwrap().split(' ').next().unwrap()).collect();
+        assert_eq!(ops, ["emergency-engage", "emergency-release", "watchdog-restore", "reset-fans"], "{lines:#?}");
+        let me = format!(" by=service pid={} image=wiregent-hw.exe (the service's own safety write) ", std::process::id());
+        assert!(lines.iter().all(|l| l.starts_with("write 20") && l.contains(&me) && l.ends_with("outcome=ok")), "{lines:#?}");
+        assert!(lines[0].contains("value=every fan 100 (hottest sensor 100 °C)"), "{}", lines[0]);
+        assert!(lines[2].contains("value=Balanced and every fan 0 (no temperature for 30 s)"), "{}", lines[2]);
     }
 
     /// Readings stop in the middle of an emergency: the restore sets Balanced, but the fans stay at full.
