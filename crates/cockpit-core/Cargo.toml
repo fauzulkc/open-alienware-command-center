@@ -6,12 +6,13 @@ license.workspace = true
 
 # What Alien Cockpit OSS and the `cockpit` command line share: settings and their validation, the emergency
 # rule as the app runs it, the daily log, the AWCC lighting and game-library readers, the boost key's choice
-# and the alert texts. No Tauri here. Windows-only parts (AWCC's files, the local clock) are gated, so this
+# and the alert texts, keyboard lighting control (lightctl, on the alienfx crate). No Tauri here. Windows-only parts (AWCC's files, the local clock) are gated, so this
 # compiles on Linux too.
 
 [dependencies]
 wiregent-hw = { path = "../hw" }
 wiregent-oem-alienware = { path = "../oem-alienware" }
+alienfx = { path = "../alienfx" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -19,7 +20,7 @@ dirs.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_SystemInformation"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }
 
 [dev-dependencies]
 tempfile.workspace = true

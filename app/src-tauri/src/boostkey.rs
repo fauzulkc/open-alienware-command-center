@@ -2,24 +2,18 @@
 //! press does (the target mode, who handles it, the debounce) is cockpit-core's `boostkey`, shared with the
 //! command line's `cockpit boost-key target`.
 //!
-//! Privacy: only the scancode is compared; every other key is dropped without being stored or looked at.
+//! The same read-only Raw Input listener (`cockpit_core::keyinput`) also hands every key-down to the reactive
+//! glow (`glow.rs`), which turns it into an LED id and heat in memory while the glow runs, and drops it
+//! otherwise. Nothing logs or stores which keys were pressed. Keys are never blocked, injected or remapped.
 
 pub use cockpit_core::boostkey::*;
 
 #[cfg(windows)]
 pub mod win {
-    use std::cell::RefCell;
-    use windows::core::{w, PCWSTR};
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
-    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
-    use windows::Win32::UI::Input::{GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEKEYBOARD};
-    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, RegisterClassW, HWND_MESSAGE, MSG, RI_KEY_BREAK, WINDOW_EX_STYLE, WINDOW_STYLE, WM_INPUT, WNDCLASSW};
-
-    thread_local! {
-        static ON_KEY: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
-    }
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
     /// Whether the window in front belongs to an elevated process (unknown counts as elevated: then AWCC
     /// can't have seen the key either, because it can't even open that process).
@@ -47,40 +41,14 @@ pub mod win {
         }
     }
 
-    unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-        if msg == WM_INPUT {
-            let hdr = std::mem::size_of::<RAWINPUTHEADER>() as u32;
-            let mut raw = std::mem::zeroed::<RAWINPUT>();
-            let mut size = std::mem::size_of::<RAWINPUT>() as u32;
-            let got = GetRawInputData(HRAWINPUT(lp.0 as _), RID_INPUT, Some((&mut raw as *mut RAWINPUT).cast()), &mut size, hdr);
-            if got != u32::MAX && raw.header.dwType == RIM_TYPEKEYBOARD.0 {
-                let k = raw.data.keyboard;
-                if k.MakeCode == super::SCANCODE && (k.Flags as u32 & RI_KEY_BREAK) == 0 {
-                    ON_KEY.with(|f| {
-                        if let Some(f) = f.borrow_mut().as_mut() {
-                            f();
-                        }
-                    });
-                }
+    /// Listens on this thread forever (Raw Input, read-only): calls `on_press` for each key-down of the boost
+    /// key, and hands every key-down (make code, flags) to `on_key` (the reactive glow).
+    pub fn listen(mut on_press: impl FnMut() + 'static, mut on_key: impl FnMut(u16, u16) + 'static) -> anyhow::Result<()> {
+        cockpit_core::keyinput::win::listen("AlienCockpitBoostKey", move |make, flags| {
+            if make == super::SCANCODE {
+                on_press();
             }
-        }
-        DefWindowProcW(hwnd, msg, wp, lp)
-    }
-
-    /// Listens on this thread forever and calls `on_press` for each key-down of the boost key.
-    pub fn listen(on_press: impl FnMut() + 'static) -> anyhow::Result<()> {
-        ON_KEY.with(|f| *f.borrow_mut() = Some(Box::new(on_press)));
-        unsafe {
-            let hinst = GetModuleHandleW(None)?;
-            let class = w!("AlienCockpitBoostKey");
-            RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(proc), hInstance: hinst.into(), lpszClassName: class, ..Default::default() });
-            let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), class, PCWSTR::null(), WINDOW_STYLE(0), 0, 0, 0, 0, Some(HWND_MESSAGE), None, Some(hinst.into()), None)?;
-            RegisterRawInputDevices(&[RAWINPUTDEVICE { usUsagePage: 0x01, usUsage: 0x06, dwFlags: RIDEV_INPUTSINK, hwndTarget: hwnd }], std::mem::size_of::<RAWINPUTDEVICE>() as u32)?;
-            let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                DispatchMessageW(&msg);
-            }
-        }
-        Ok(())
+            on_key(make, flags);
+        })
     }
 }

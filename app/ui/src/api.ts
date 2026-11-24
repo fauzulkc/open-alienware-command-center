@@ -1,6 +1,8 @@
 // Calls into the app's Rust commands. In a plain browser (vite dev without Tauri) it answers from demo data,
 // clearly marked, so the screens can be worked on without the laptop.
 
+import { importAwcc, isHex, lightingProblem } from './logic';
+
 export type Source = 'service' | 'direct' | 'demo' | 'unavailable';
 
 export interface Sensor { id: number; name: string; celsius: number | null; stale: boolean }
@@ -26,6 +28,72 @@ export interface BoostChange { fan: string; level: number; before: number | null
 export interface LogDay { day: string; bytes: number }
 export interface Controls { modes: ControlState; fans: ControlState; lighting: ControlState; emergency?: { active: boolean; triggerC: number | null; releaseC: number | null } }
 export interface ModeChange { requested: string; before: string | null; after: string | null; confirmed: boolean; unchanged: boolean }
+
+// ---------------------------------------------------------------- keyboard lighting (docs/lighting-control.md)
+/** "#RRGGBB" */
+export type Rgb = string;
+export type KeyEffect = 'static' | 'breathing' | 'wave' | 'dualWave' | 'pulse' | 'mixPulse' | 'nightRider' | 'laser';
+export interface KeyboardLight {
+  /** false = backlight off (brightness 0), colours kept */
+  on: boolean;
+  /** 0..100 % */
+  brightness: number;
+  /** 'static' = per-key colours; the others are the keyboard's own (hardware) effects */
+  effect: KeyEffect;
+  /** 0..255, effects only */
+  tempo: number;
+  /** base colour for every key */
+  color: Rgb;
+  /** second colour for dualWave / mixPulse */
+  color2: Rgb;
+  /** group name (from `layout`) -> colour, over the base */
+  groups: Record<string, Rgb>;
+  /** key id -> colour, over groups */
+  keys: Record<number, Rgb>;
+}
+/** The reactive glow: keys warm up as they are pressed (custom, static only). */
+export interface ReactiveSettings {
+  on: boolean;
+  /** frames a second at most, 10..30 */
+  fps: number;
+  /** the fade's time constant, 200..3000 ms */
+  decayMs: number;
+  /** warmth a press adds to its neighbours, 0..1 */
+  spread: number;
+  /** how far keys near where you type lean warm, 0..0.5 */
+  drift: number;
+  /** the warm colour (intended; sent through ledPalette) */
+  warm: Rgb;
+  /** the hint at a press's peak (intended) */
+  peak: Rgb;
+}
+export interface LightingSettings {
+  /** 'awcc': the app never writes (AWCC's look stays) */
+  mode: 'awcc' | 'custom';
+  keyboard: KeyboardLight;
+  /** v4 light id -> colour (sent, not visible on this unit) */
+  zones: Record<number, Rgb>;
+  offOnSleep: boolean;
+  offOnLidClose: boolean;
+  offOnDisplayOff: boolean;
+  dimOnBatterySaver: boolean;
+  pauseAwcc: boolean;
+  /** The keyboard LEDs' colour balance, % per channel: colours are corrected on the way to the keyboard. */
+  ledBalance?: { r: number; g: number; b: number };
+  /** Colours matched by eye on this keyboard: intended #RRGGBB -> the value sent so the key looks like it. */
+  ledPalette?: Record<string, string>;
+  /** The reactive glow (missing in older settings: off). */
+  reactive?: ReactiveSettings;
+}
+export interface KeyInfo { id: number; name: string; row: number; col: number; width: number; group?: string; present?: boolean }
+export interface LightingStatus {
+  settings: LightingSettings;
+  layout: KeyInfo[];
+  groups: string[];
+  awcc: { preset: string; keys: Record<number, Rgb> } | null;
+  device: { keyboard: boolean; zones: boolean; zonesVisible: false; error?: string };
+  lastApply?: { ok: boolean; at: number; text: string };
+}
 
 const inApp = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -73,7 +141,7 @@ const demo = {
   health: (): Health => ({ battery: { design_mwh: 87005, full_mwh: 52201, wear_pct: 40, cycles: 98 }, disks: [], events: { days: 30, hardware_errors: 6, crashes: 0, unexpected_shutdowns: 0 }, unavailable: ['disk wear: access denied: Windows needs admin to read this'], findings: ['6 hardware error report(s) (WHEA) in the last 30 days.', 'The battery holds 40% less than when new (52201 of 87005 mWh).'] }),
   drift: () => ({ ok: false, drift: [{ service: 'DellTechHub', expected: ['Delayed'], actual: 'Auto', running: true, severity: 'high', why: 'Your rule: Automatic (Delayed Start).' }] as Drift[] }),
   lighting: () => ({ devices: [{ device: '0x0406_AdvCherryMechanicalKB', preset: 'System Default', groups: [{ leds: Array(19).fill(0), effect: 4, brightness: 100, colors: ['#FF00FF'] }, { leds: Array(12).fill(0), effect: 4, brightness: 100, colors: ['#2AAAFF'] }, { leds: Array(25).fill(0), effect: 4, brightness: 100, colors: ['#FFCDE9'] }, { leds: Array(10).fill(0), effect: 4, brightness: 100, colors: ['#6BFFB9'] }, { leds: Array(11).fill(0), effect: 4, brightness: 100, colors: ['#FFED87'] }], power_states: [] }, { device: '0x0406', preset: 'System Default', groups: [], power_states: ['DC - Sleep', 'DC - Working', 'DC - Low Battery', 'AC - Sleep', 'AC - Fully Charge', 'AC - Charging', 'Spectrum'] }] as LightDevice[], error: undefined as string | undefined }),
-  controls: (): Controls => ({ modes: { enabled: true, reasons: ['Browser preview: switching changes the demo only.'], route: 'demo', last: demoLast }, fans: { enabled: true, reasons: [], notes: ['Browser preview: boost changes the demo only.'], boosted: { ...demoBoost } }, lighting: { enabled: false, reasons: ['Writing lighting needs the lighting protocol port and a test on this keyboard.'] } }),
+  controls: (): Controls => ({ modes: { enabled: true, reasons: ['Browser preview: switching changes the demo only.'], route: 'demo', last: demoLast }, fans: { enabled: true, reasons: [], notes: ['Browser preview: boost changes the demo only.'], boosted: { ...demoBoost } }, lighting: { enabled: true, reasons: [], notes: ['Browser preview: lighting changes the demo only.'] } }),
   setFanBoost: async (fans: string[], level: number): Promise<BoostChange[]> => {
     await new Promise((r) => setTimeout(r, 600));
     return fans.map((f) => { const before = demoBoost[f] ?? 0; if (level) demoBoost[f] = level; else delete demoBoost[f]; return { fan: f, level, before, after: level, rpm_before: 3700, rpm_after: Math.min(4600, 3700 + level * 9), confirmed: true }; });
@@ -88,8 +156,101 @@ const demo = {
   },
 };
 
+// ---------------------------------------------------------------- demo keyboard lighting (browser only)
+// The x17 R2's 91 keys by AWCC's LED ids, laid out like the laptop. The real layout comes from `lighting_status`.
+// From the owner's photo of the keyboard (2026-11-24): 84 lit keys, 16 key units per row; the arrows double as
+// Page Up/Down; the right column is Del, Mic, Mute, Vol +, Vol −, →; the space bar (null) has no LED.
+type Row = [id: number | null, name: string, width?: number][];
+const DEMO_ROWS: Row[] = [
+  [[0, 'ESC'], ...Array.from({ length: 12 }, (_, i) => [i + 1, `F${i + 1}`] as [number, string]), [13, 'Home'], [14, 'End'], [15, 'Delete']],
+  [[20, '`'], ...'1234567890'.split('').map((c, i) => [21 + i, c] as [number, string]), [31, '-'], [32, '='], [35, 'Backspace', 2], [19, 'Microphone Mute']],
+  [[40, 'Tab', 1.5], ...'QWERTYUIOP[]'.split('').map((c, i) => [42 + i, c] as [number, string]), [55, '|', 1.5], [16, 'Speaker Mute']],
+  [[61, 'Caps Lock', 1.75], ...'ASDFGHJKL;\''.split('').map((c, i) => [62 + i, c] as [number, string]), [74, 'Enter', 2.25], [18, 'Volume Up']],
+  [[81, 'Left Shift', 2.25], ...'ZXCVBNM,./'.split('').map((c, i) => [83 + i, c] as [number, string]), [94, 'Right Shift', 1.75], [114, 'Up / Page Up'], [17, 'Volume Down']],
+  [[100, 'Left Ctrl', 1.25], [101, 'Fn'], [103, 'Left Windows'], [104, 'Left Alt'], [null, '', 5], [111, 'Right Alt'], [109, 'Windows lock'], [112, 'Right Ctrl', 1.75], [133, 'Left Arrow'], [134, 'Down / Page Down'], [135, 'Right Arrow']],
+];
+/** AWCC ids with no physical key on this keyboard: written with the rest, never drawn. */
+const DEMO_ABSENT: [number, string][] = [[33, 'JP1'], [59, 'JP3'], [73, 'UK1'], [82, 'JP6'], [105, 'JP4'], [113, 'Page Up'], [115, 'Page Down']];
+const DEMO_GROUP_OF: Record<number, string> = {
+  ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, 'Function Keys'])),
+  ...Object.fromEntries(Array.from({ length: 10 }, (_, i) => [21 + i, 'Numbers'])),
+  42: 'QWER', 44: 'QWER', 45: 'QWER', 43: 'WASD', 62: 'WASD', 63: 'WASD', 64: 'WASD',
+};
+export const DEMO_LAYOUT: KeyInfo[] = [
+  ...DEMO_ROWS.flatMap((keys, row) => {
+    let col = 0;
+    const out: KeyInfo[] = [];
+    for (const [id, name, width = 1] of keys) {
+      if (id != null) out.push({ id, name, row, col, width, present: true, ...(DEMO_GROUP_OF[id] ? { group: DEMO_GROUP_OF[id] } : {}) });
+      col += width;
+    }
+    return out;
+  }),
+  ...DEMO_ABSENT.map(([id, name]) => ({ id, name, row: 255, col: 0, width: 1, present: false })),
+];
+const range = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
+/** AWCC's "System Default" preset on the owner's laptop, as colour groups by LED id. */
+const DEMO_AWCC_GROUPS: [Rgb, number[]][] = [
+  ['#FF00FF', [0, 13, 14, 15, 31, 32, 33, 35, 19, 46, 47, 59, 65, 66, 73, 82, 105, 113, 115]],
+  ['#2AAAFF', [...range(1, 12), 42, 44, 45]],
+  ['#3500FF', [43, 62, 63, 64]],
+  ['#FFCDE9', [133, 134, 112, 92, 94, 114, 91, 70, 71, 72, 74, 90, 111, 69, 89, 68, 88, 67, 48, 49, 50, 51, 52, 53, 55]],
+  ['#6BFFB9', [101, 103, 104, 100, 81, 83, 84, 85, 86, 87]],
+  ['#6022FF', [135, 17, 18, 16]],
+  ['#FF00FF', [61]],
+  ['#FF0000', [40]],
+  ['#FFED87', range(20, 30)],
+  ['#0000FF', [109]],
+];
+export const DEMO_AWCC_KEYS: Record<number, Rgb> = Object.fromEntries(DEMO_AWCC_GROUPS.flatMap(([c, ids]) => ids.map((id) => [id, c])));
+const DEMO_LIGHT_GROUPS = ['Function Keys', 'Numbers', 'QWER', 'WASD'];
+const demoLightDefaults = (): LightingSettings => ({
+  mode: 'awcc',
+  keyboard: { on: true, brightness: 100, effect: 'static', tempo: 128, color: '#FFCDE9', color2: '#2AAAFF', groups: {}, keys: {} },
+  zones: { 1: '#FF00FF', ...Object.fromEntries(range(10, 19).map((id) => [id, '#2AAAFF'])) },
+  offOnSleep: true, offOnLidClose: true, offOnDisplayOff: true, dimOnBatterySaver: false, pauseAwcc: true,
+});
+let demoLight: LightingStatus = {
+  settings: demoLightDefaults(),
+  layout: DEMO_LAYOUT,
+  groups: DEMO_LIGHT_GROUPS,
+  awcc: { preset: 'System Default', keys: DEMO_AWCC_KEYS },
+  device: { keyboard: true, zones: true, zonesVisible: false },
+};
+const copy = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
+const later = <T,>(f: () => T, ms = 140) => new Promise<T>((res, rej) => setTimeout(() => { try { res(f()); } catch (e) { rej(e); } }, ms));
+const applied = (text: string) => ({ ok: true, at: Date.now(), text });
+const demoLighting = {
+  status: () => later(() => copy(demoLight), 60),
+  set: (s: LightingSettings) => later(() => {
+    const problem = lightingProblem(s, demoLight.layout, demoLight.groups);
+    if (problem) throw problem; // the backend refuses with a plain error string
+    demoLight = { ...demoLight, settings: copy(s), lastApply: s.mode === 'custom' ? applied('Demo: written to the keyboard.') : applied('Demo: saved; AWCC keeps the keyboard.') };
+    return copy(demoLight);
+  }),
+  previewKey: (id: number, color: Rgb) => later(() => {
+    if (!demoLight.layout.some((k) => k.id === id)) throw `No key with id ${id} on this keyboard.`;
+    if (!isHex(color)) throw `"${color}" is not a #RRGGBB colour.`;
+    return copy(demoLight);
+  }, 20),
+  restoreAwcc: () => later(() => {
+    demoLight = { ...demoLight, settings: { ...demoLight.settings, mode: 'awcc' }, lastApply: applied(`Demo: AWCC's "${demoLight.awcc?.preset}" written back to all ${demoLight.layout.length} keys.`) };
+    return copy(demoLight);
+  }, 400),
+  importAwcc: () => later(() => {
+    if (!demoLight.awcc) throw "AWCC's lighting preset couldn't be read.";
+    demoLight = { ...demoLight, settings: importAwcc(demoLight.settings, demoLight.awcc, demoLight.layout) };
+    return copy(demoLight);
+  }, 300),
+};
+
 export const api = {
   inApp,
+  lightingStatus: () => (inApp ? call<LightingStatus>('lighting_status') : demoLighting.status()),
+  lightingSet: (settings: LightingSettings) => (inApp ? call<LightingStatus>('lighting_set', { settings }) : demoLighting.set(settings)),
+  lightingPreviewKey: (id: number, color: Rgb) => (inApp ? call<LightingStatus>('lighting_preview_key', { id, color }) : demoLighting.previewKey(id, color)),
+  lightingRestoreAwcc: () => (inApp ? call<LightingStatus>('lighting_restore_awcc') : demoLighting.restoreAwcc()),
+  lightingImportAwcc: () => (inApp ? call<LightingStatus>('lighting_import_awcc') : demoLighting.importAwcc()),
   status: () => (inApp ? call<Status>('status') : Promise.resolve(demo.status())),
   /** Chart points: all of them, or only those after `after` (the newest `t` the window already has). */
   history: (after?: number) => (inApp ? call<Point[]>('history', { after: after ?? null }) : Promise.resolve(demo.history(after))),

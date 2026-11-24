@@ -1,0 +1,216 @@
+{
+  "name": "Dota 2 + Warframe + AI engineer",
+  "about": "Colour only where a key has a job, arranged as one design: cyan abilities and rich purple items on the left, a peach, hot purple and pink-violet typing area (the middle is what shows with both hands down), purple arrows and Fn keys, pink sound, living-coral toggles (F1, Caps), red risk keys, dim royal blue for rarely used system keys, white mirrored modifiers. Windows keys dim royal blue; bottom row dimmed since it sits closest to the eyes. Colours here are what the app shows; ledPalette maps each to the value that looks like it on the owner's x17 R2 keys, matched by eye from candidates on 2026-11-24 (the LEDs' red and green are much stronger than blue and don't mix linearly). Key ids are AWCC's, which are the keyboard's own. Built from the owner's Dota binds (QWER abilities, ASD ZXC items, ` TP), Warframe, heavy typing and coding, Fn+F1 boost, Fn+F7/F10/F11, Win+Alt+B for HDR, arrows, volume and mute, Right Ctrl as Tab.",
+  "base": "#FFFFFF",
+  "ledBalance": {
+    "r": 50,
+    "g": 60,
+    "b": 100
+  },
+  "ledPalette": {
+    "#00E5FF": "#00B0E0",
+    "#6A3DFF": "#3800FF",
+    "#FF9480": "#FF5030",
+    "#C86BFF": "#7800FF",
+    "#9F7BFF": "#5808FF",
+    "#775CBF": "#4206BF",
+    "#483773": "#280473",
+    "#FF3DB4": "#A000F0",
+    "#E07BFF": "#8000E0",
+    "#FF6F61": "#F83430",
+    "#FF1E3C": "#FF000C",
+    "#3A4FD0": "#1000C0",
+    "#FFFFFF": "#8099FF",
+    "#BFBFBF": "#6073BF",
+    "#737373": "#3A4573",
+    "#A040FF": "#8400D0"
+  },
+  "roles": [
+    {
+      "role": "Abilities: Dota Q W E R; Warframe 1-4 and F",
+      "color": "#00E5FF",
+      "keys": {
+        "Q": 42,
+        "W": 43,
+        "E": 44,
+        "R": 45,
+        "F": 65,
+        "1": 21,
+        "2": 22,
+        "3": 23,
+        "4": 24,
+        "5": 25
+      }
+    },
+    {
+      "role": "Items: Dota A S D Z X C, and ` for the TP scroll",
+      "color": "#6A3DFF",
+      "keys": {
+        "A": 62,
+        "S": 63,
+        "D": 64,
+        "Z": 83,
+        "X": 84,
+        "C": 85,
+        "` (TP)": 20
+      }
+    },
+    {
+      "role": "Typing centre, exposed between the hands: peach",
+      "color": "#FF9480",
+      "keys": {
+        "6": 26,
+        "7": 27,
+        "T": 46,
+        "Y": 47,
+        "G": 66,
+        "H": 67,
+        "V": 86,
+        "B": 87,
+        "N": 88
+      }
+    },
+    {
+      "role": "Typing middle right: hot purple (picked from a purple grid on the keys, 2026-11-24)",
+      "color": "#A040FF",
+      "keys": {
+        "8": 28,
+        "9": 29,
+        "0": 30,
+        "U": 48,
+        "I": 49,
+        "O": 50,
+        "P": 51,
+        "J": 68,
+        "K": 69,
+        "L": 70,
+        "M": 89
+      }
+    },
+    {
+      "role": "Typing right edge and coding punctuation: pink-violet",
+      "color": "#C86BFF",
+      "keys": {
+        "-": 31,
+        "=": 32,
+        "[": 52,
+        "]": 53,
+        "\\": 55,
+        ";": 71,
+        "'": 72,
+        "Enter": 74,
+        ",": 90,
+        ".": 91,
+        "/": 92
+      }
+    },
+    {
+      "role": "Fn keys in daily use: keyboard backlight (F7), display brightness (F10, F11)",
+      "color": "#9F7BFF",
+      "keys": {
+        "F7": 7,
+        "F10": 10,
+        "F11": 11
+      }
+    },
+    {
+      "role": "Arrows at 75 % (bottom right, used a lot)",
+      "color": "#775CBF",
+      "keys": {
+        "Up / Page Up": 114,
+        "Left": 133,
+        "Down / Page Down": 134,
+        "Right": 135
+      }
+    },
+    {
+      "role": "Fn at 45 % (bottom row)",
+      "color": "#483773",
+      "keys": {
+        "Fn": 101
+      }
+    },
+    {
+      "role": "Mute (used actively): hot pink",
+      "color": "#FF3DB4",
+      "keys": {
+        "Speaker Mute": 16
+      }
+    },
+    {
+      "role": "Volume: pink",
+      "color": "#E07BFF",
+      "keys": {
+        "Volume Up": 18,
+        "Volume Down": 17
+      }
+    },
+    {
+      "role": "Mode toggles: boost (F1), Caps Lock: living coral",
+      "color": "#FF6F61",
+      "keys": {
+        "F1": 1,
+        "Caps Lock": 61
+      }
+    },
+    {
+      "role": "Risk: cancel, delete, privacy: red",
+      "color": "#FF1E3C",
+      "keys": {
+        "Esc": 0,
+        "Backspace": 35,
+        "Delete": 15,
+        "Microphone Mute": 19
+      }
+    },
+    {
+      "role": "Rarely used system keys and the Windows keys (Win+Alt+B for HDR; leaves a game): dim royal blue, the least distracting",
+      "color": "#3A4FD0",
+      "keys": {
+        "F2": 2,
+        "F3": 3,
+        "F4": 4,
+        "F5": 5,
+        "F6": 6,
+        "F8": 8,
+        "F9": 9,
+        "F12": 12,
+        "Home / PrtScn": 13,
+        "End / Pause": 14,
+        "Left Windows": 103,
+        "Windows lock": 109
+      }
+    },
+    {
+      "role": "Mirrored modifiers, one hue (white): both Shifts",
+      "color": "#FFFFFF",
+      "keys": {
+        "Left Shift": 81,
+        "Right Shift": 94
+      }
+    },
+    {
+      "role": "Right Ctrl, your Tab (PowerToys remap; the Tab key is broken): white at 75 %",
+      "color": "#BFBFBF",
+      "keys": {
+        "Right Ctrl": 112
+      }
+    },
+    {
+      "role": "Left Ctrl and both Alts: white at 45 % (bottom row)",
+      "color": "#737373",
+      "keys": {
+        "Left Ctrl": 100,
+        "Left Alt": 104,
+        "Right Alt": 111
+      }
+    },
+    {
+      "role": "Broken key: dark, reach for Right Ctrl",
+      "color": "#000000",
+      "keys": {
+        "Tab": 40
+      }
+    }
+  ]
+}

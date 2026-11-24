@@ -68,6 +68,21 @@ Audio-reactive and game-reactive effects are extras; they come last, if at all.
 
 Gate: both writes seen, both restored, the id map recorded.
 
+#### L0 results (2026-11-24, with the owner at the laptop)
+- **Pause:** AWCC's lighting runs as two programs, `AlienFXSubAgent` and `FxDisplayService` (children of Dell
+  TechHub, not services). Suspending both (`NtSuspendProcess`) pauses them without admin rights and without
+  touching TechHub or any setting; resuming undoes it.
+- **Keyboard (API v5): works.** Index 0 lit Esc; with every key dark, AWCC's id 43 lit exactly "W". So AWCC's
+  LED ids (FXMetadata `LigthingInfo.Leds`, 91 keys) *are* the keyboard's indices: the key map is AWCC's own.
+- **Zone controller (API v4): accepts the reports** (status ready before and after), but nothing visible
+  changed: the owner says the lid and rear lights may be unplugged and not repairable. Unverifiable on this
+  unit; v4 stays protocol-tested only.
+- **AWCC does not re-apply its look when resumed.** The keyboard stayed in the test state until the active
+  preset was written back from a read-only copy of AWCC's database (all 91 keys, 11 groups). So the app must
+  restore the look itself after any change: the L2 import is needed for L1, not after it.
+- AWCC's lighting files were byte-identical to the backup afterwards. The test tool is
+  `crates/alienfx/examples/write_test.rs` (`zone`, `key`, `only`, `preset`, `status`; prints unless `--send`).
+
 ### L1: everyday lighting (most of what people use)
 - Brightness and lights off for the keyboard and the zones, from the app and the tray.
 - One colour per zone and for the whole keyboard; the hardware effects with their settings.

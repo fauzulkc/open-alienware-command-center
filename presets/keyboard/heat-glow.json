@@ -1,0 +1,287 @@
+{
+  "name": "Heat glow (Dota 2 + Warframe + AI engineer)",
+  "about": "The approved preset's colours by role, with brightness by use: the most-pressed keys glow at full strength, less-used keys of the same colour at 80, 60 or 45 %. Use is estimated from English letter frequency, coding, and the owner's Dota (QWER abilities, ASD ZXC items, ` TP) and Warframe keys. Awareness keys (red risk, coral toggles, pink sound), the royal-blue rare tier and the dimmed bottom row keep their own brightness. Colours are sent through the owner's matched ledPalette.",
+  "base": "#FFFFFF",
+  "ledBalance": {
+    "r": 50,
+    "g": 60,
+    "b": 100
+  },
+  "ledPalette": {
+    "#00E5FF": "#00B0E0",
+    "#00B7CC": "#008DB3",
+    "#008999": "#006A86",
+    "#6A3DFF": "#3800FF",
+    "#5531CC": "#2D00CC",
+    "#FF9480": "#FF5030",
+    "#99594D": "#99301D",
+    "#73433A": "#732416",
+    "#A040FF": "#8400D0",
+    "#8033CC": "#6A00A6",
+    "#602699": "#4F007D",
+    "#481D73": "#3B005E",
+    "#A056CC": "#6000CC",
+    "#784099": "#480099",
+    "#5A3073": "#360073",
+    "#5F4A99": "#350599",
+    "#775CBF": "#4206BF",
+    "#483773": "#280473",
+    "#FF3DB4": "#A000F0",
+    "#E07BFF": "#8000E0",
+    "#FF6F61": "#F83430",
+    "#FF1E3C": "#FF000C",
+    "#3A4FD0": "#1000C0",
+    "#CCCCCC": "#667ACC",
+    "#BFBFBF": "#6073BF",
+    "#737373": "#3A4573",
+    "#000000": "#000000"
+  },
+  "roles": [
+    {
+      "role": "Abilities: Dota Q W E R; Warframe 1-4 and F",
+      "color": "#00E5FF",
+      "keys": {
+        "Q": 42,
+        "W": 43,
+        "E": 44,
+        "R": 45,
+        "F": 65
+      }
+    },
+    {
+      "role": "Abilities: Dota Q W E R; Warframe 1-4 and F — 80 % (less used)",
+      "color": "#00B7CC",
+      "keys": {
+        "1": 21,
+        "2": 22
+      }
+    },
+    {
+      "role": "Abilities: Dota Q W E R; Warframe 1-4 and F — 60 % (less used)",
+      "color": "#008999",
+      "keys": {
+        "3": 23,
+        "4": 24,
+        "5": 25
+      }
+    },
+    {
+      "role": "Items: Dota A S D Z X C, and ` for the TP scroll",
+      "color": "#6A3DFF",
+      "keys": {
+        "A": 62,
+        "S": 63,
+        "D": 64,
+        "Z": 83,
+        "X": 84,
+        "` (TP)": 20
+      }
+    },
+    {
+      "role": "Items: Dota A S D Z X C, and ` for the TP scroll — 80 % (less used)",
+      "color": "#5531CC",
+      "keys": {
+        "C": 85
+      }
+    },
+    {
+      "role": "Typing centre, exposed between the hands: peach",
+      "color": "#FF9480",
+      "keys": {
+        "T": 46,
+        "H": 67,
+        "N": 88
+      }
+    },
+    {
+      "role": "Typing centre, exposed between the hands: peach — 60 % (less used)",
+      "color": "#99594D",
+      "keys": {
+        "Y": 47,
+        "G": 66,
+        "B": 87
+      }
+    },
+    {
+      "role": "Typing centre, exposed between the hands: peach — 45 % (less used)",
+      "color": "#73433A",
+      "keys": {
+        "6": 26,
+        "7": 27,
+        "V": 86
+      }
+    },
+    {
+      "role": "Typing middle right: hot purple (picked from a purple grid on the keys, 2026-11-24)",
+      "color": "#A040FF",
+      "keys": {
+        "I": 49,
+        "O": 50
+      }
+    },
+    {
+      "role": "Typing middle right: hot purple (picked from a purple grid on the keys, 2026-11-24) — 80 % (less used)",
+      "color": "#8033CC",
+      "keys": {
+        "U": 48,
+        "L": 70,
+        "M": 89
+      }
+    },
+    {
+      "role": "Typing middle right: hot purple (picked from a purple grid on the keys, 2026-11-24) — 60 % (less used)",
+      "color": "#602699",
+      "keys": {
+        "P": 51
+      }
+    },
+    {
+      "role": "Typing middle right: hot purple (picked from a purple grid on the keys, 2026-11-24) — 45 % (less used)",
+      "color": "#481D73",
+      "keys": {
+        "8": 28,
+        "9": 29,
+        "0": 30,
+        "J": 68,
+        "K": 69
+      }
+    },
+    {
+      "role": "Typing right edge and coding punctuation: pink-violet — 80 % (less used)",
+      "color": "#A056CC",
+      "keys": {
+        "Enter": 74,
+        ",": 90,
+        ".": 91
+      }
+    },
+    {
+      "role": "Typing right edge and coding punctuation: pink-violet — 60 % (less used)",
+      "color": "#784099",
+      "keys": {
+        "-": 31,
+        ";": 71,
+        "/": 92
+      }
+    },
+    {
+      "role": "Typing right edge and coding punctuation: pink-violet — 45 % (less used)",
+      "color": "#5A3073",
+      "keys": {
+        "=": 32,
+        "[": 52,
+        "]": 53,
+        "\\": 55,
+        "'": 72
+      }
+    },
+    {
+      "role": "Fn keys in daily use: keyboard backlight (F7), display brightness (F10, F11) — 60 % (less used)",
+      "color": "#5F4A99",
+      "keys": {
+        "F7": 7,
+        "F10": 10,
+        "F11": 11
+      }
+    },
+    {
+      "role": "Arrows at 75 % (bottom right, used a lot)",
+      "color": "#775CBF",
+      "keys": {
+        "Up / Page Up": 114,
+        "Left": 133,
+        "Down / Page Down": 134,
+        "Right": 135
+      }
+    },
+    {
+      "role": "Fn at 45 % (bottom row)",
+      "color": "#483773",
+      "keys": {
+        "Fn": 101
+      }
+    },
+    {
+      "role": "Mute (used actively): hot pink",
+      "color": "#FF3DB4",
+      "keys": {
+        "Speaker Mute": 16
+      }
+    },
+    {
+      "role": "Volume: pink",
+      "color": "#E07BFF",
+      "keys": {
+        "Volume Up": 18,
+        "Volume Down": 17
+      }
+    },
+    {
+      "role": "Mode toggles: boost (F1), Caps Lock: living coral",
+      "color": "#FF6F61",
+      "keys": {
+        "F1": 1,
+        "Caps Lock": 61
+      }
+    },
+    {
+      "role": "Risk: cancel, delete, privacy: red",
+      "color": "#FF1E3C",
+      "keys": {
+        "Esc": 0,
+        "Backspace": 35,
+        "Delete": 15,
+        "Microphone Mute": 19
+      }
+    },
+    {
+      "role": "Rarely used system keys and the Windows keys (Win+Alt+B for HDR; leaves a game): dim royal blue, the least distracting",
+      "color": "#3A4FD0",
+      "keys": {
+        "F2": 2,
+        "F3": 3,
+        "F4": 4,
+        "F5": 5,
+        "F6": 6,
+        "F8": 8,
+        "F9": 9,
+        "F12": 12,
+        "Home / PrtScn": 13,
+        "End / Pause": 14,
+        "Left Windows": 103,
+        "Windows lock": 109
+      }
+    },
+    {
+      "role": "Mirrored modifiers, one hue (white): both Shifts — 80 % (less used)",
+      "color": "#CCCCCC",
+      "keys": {
+        "Left Shift": 81,
+        "Right Shift": 94
+      }
+    },
+    {
+      "role": "Right Ctrl, your Tab (PowerToys remap; the Tab key is broken): white at 75 %",
+      "color": "#BFBFBF",
+      "keys": {
+        "Right Ctrl": 112
+      }
+    },
+    {
+      "role": "Left Ctrl and both Alts: white at 45 % (bottom row)",
+      "color": "#737373",
+      "keys": {
+        "Left Ctrl": 100,
+        "Left Alt": 104,
+        "Right Alt": 111
+      }
+    },
+    {
+      "role": "Broken key: dark, reach for Right Ctrl",
+      "color": "#000000",
+      "keys": {
+        "Tab": 40
+      }
+    }
+  ]
+}

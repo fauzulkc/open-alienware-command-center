@@ -34,6 +34,9 @@ pub struct Settings {
     pub live_admin: bool,
     /// Start in the tray at sign-in, as administrator without a prompt (a Task Scheduler task). Off by default.
     pub autostart: bool,
+    /// Keyboard lighting (docs/lighting-control.md). Missing in older files: AWCC's look stays.
+    #[serde(default)]
+    pub lighting: crate::lightctl::LightingSettings,
 }
 
 /// Interface effects, each on its own switch (Settings → Appearance).
@@ -58,7 +61,7 @@ impl Default for Effects {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { demo: false, emergency_c: 98, default_profile: "0xA0".into(), boost_key: "awcc".into(), fan_curves: Default::default(), game_modes: Default::default(), notify: true, theme: "dark".into(), log: log::LogSettings::default(), effects: Effects::default(), live_admin: true, autostart: false }
+        Settings { demo: false, emergency_c: 98, default_profile: "0xA0".into(), boost_key: "awcc".into(), fan_curves: Default::default(), game_modes: Default::default(), notify: true, theme: "dark".into(), log: log::LogSettings::default(), effects: Effects::default(), live_admin: true, autostart: false, lighting: Default::default() }
     }
 }
 
@@ -93,6 +96,7 @@ impl Settings {
         if self.game_modes.values().any(|m| !PROFILES.contains(&m.as_str())) {
             return Err("a game is set to an unknown mode".into());
         }
+        self.lighting.validate().map_err(|e| format!("lighting: {e}"))?;
         Ok(())
     }
 
@@ -209,6 +213,34 @@ mod tests {
         std::fs::write(&p, br#"{ "emergencyC": 88, "someFutureSetting": true }"#).unwrap();
         let l = Settings::load_from(&p);
         assert_eq!((l.emergency_c, l.theme.as_str()), (88, "dark"), "unknown fields ignored, missing ones defaulted");
+    }
+
+    /// Settings files from before lighting control load with AWCC's look kept; lighting round-trips and is
+    /// validated with the rest.
+    #[test]
+    fn lighting_settings_load_save_and_validate() {
+        use crate::lightctl::{KeyEffect, Mode};
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, br#"{ "emergencyC": 90, "theme": "gray", "autostart": false }"#).unwrap();
+        let old = Settings::load_from(&p);
+        assert_eq!((old.emergency_c, old.lighting.mode), (90, Mode::Awcc), "an old file keeps its settings");
+        let mut s = old.clone();
+        s.lighting.mode = Mode::Custom;
+        s.lighting.keyboard.effect = KeyEffect::Wave;
+        s.lighting.keyboard.keys.insert(0, "#FF0000".into());
+        s.save_to(&p).unwrap();
+        assert_eq!(Settings::load_from(&p), s);
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("\"offOnSleep\"") && text.contains("\"pauseAwcc\""), "camelCase in the file");
+        s.lighting.keyboard.brightness = 150;
+        assert!(s.validate().unwrap_err().contains("lighting: brightness"));
+        let d = Settings::default();
+        assert_eq!(d.with("lighting.keyboard.color", "#112233").unwrap().lighting.keyboard.color, "#112233");
+        assert_eq!(d.with("lighting.mode", "custom").unwrap().lighting.mode, Mode::Custom);
+        assert!(d.with("lighting.keyboard.brightness", "101").is_err());
+        assert!(d.with("lighting.mode", "rainbow").is_err());
+        assert_eq!(d.get("lighting.offOnLidClose"), Some(Value::Bool(true)));
     }
 
     /// The command line's `settings get` / `settings set key=value`: same keys as the file, same validation.

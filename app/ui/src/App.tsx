@@ -112,7 +112,7 @@ export default function App() {
         {page === 'Cockpit' && <Overview status={status} history={history} controls={controls} />}
         {page === 'Performance' && <Performance status={status} history={history} controls={controls} settings={settings} save={save} />}
         {page === 'History' && <History />}
-        {page === 'Lighting' && <Lighting controls={controls} />}
+        {page === 'Lighting' && <Lighting />}
         {page === 'Health' && <HealthView />}
         {page === 'Settings' && <SettingsView settings={settings} save={save} error={error} />}
       </main>

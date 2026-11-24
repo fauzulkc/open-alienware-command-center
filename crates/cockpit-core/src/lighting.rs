@@ -2,10 +2,10 @@
 //! keyboard: AWCC's LED ids aren't HID indices, and what the colour's alpha byte means is unconfirmed.
 //! Reading the database is Windows only (AWCC's file, rusqlite); the preset parser runs anywhere.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Group {
     pub leds: Vec<u32>,
     pub effect: i64,
@@ -14,7 +14,7 @@ pub struct Group {
     pub colors: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Device {
     pub device: String,
     pub preset: String,

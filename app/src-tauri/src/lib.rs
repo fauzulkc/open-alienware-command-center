@@ -1,20 +1,25 @@
 //! Alien Cockpit OSS: a standalone app for the Alienware x17 R2 that replaces AWCC and SupportAssist's everyday
 //! jobs (docs/plans/x17-standalone-app.md). It talks to the firmware through the hardware service, or
-//! directly when it runs as admin. Thermal modes can be switched (gated, confirmed by read-back); fan boost,
-//! curves and lighting writes stay locked, with the reason, until they pass their tests.
+//! directly when it runs as admin. Thermal modes can be switched (gated, confirmed by read-back); fan boost
+//! and curves stay locked, with the reason, until they pass their tests. Keyboard lighting is written only
+//! in its custom mode (docs/lighting-control.md, the `lights` module).
 
 mod autostart;
 mod boostkey;
 mod elevate;
+mod glow;
+mod lights;
 mod processes;
 mod source;
 
 // Settings, the emergency rule as the app runs it, the daily log and the AWCC readers live in cockpit-core,
 // shared with the `cockpit` command line.
+use cockpit_core::lightctl::{self, LightAction, LightingSettings, LightingStatus, Mode, PowerEvent};
 use cockpit_core::{emergency_step, games, hottest, lighting, log, record_switch, route_for, Modes, Raised, EMERGENCY_HOLD};
 pub use cockpit_core::{Effects, Settings, PROFILES};
 
 use serde_json::{json, Value};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -42,6 +47,10 @@ pub struct App {
     settings: Mutex<Settings>,
     health: Mutex<Option<(Instant, Value)>>,
     status_item: Mutex<Option<MenuItem<tauri::Wry>>>,
+    /// Lighting writes, the AWCC pause lease and the power state, behind one mutex.
+    light: lights::Shared,
+    /// The keyboard's lighting interface was found (by the last probe).
+    keyboard_found: Arc<AtomicBool>,
 }
 
 // Commands the window polls run off the main thread (async): a sync command runs on the thread that also
@@ -123,6 +132,96 @@ async fn lighting() -> Value {
 }
 
 #[tauri::command]
+async fn lighting_status(app: State<'_, App>) -> Result<LightingStatus, String> {
+    let (s, light, found) = (app.settings.lock().unwrap().lighting.clone(), app.light.clone(), app.keyboard_found.clone());
+    tauri::async_runtime::spawn_blocking(move || lights::status(&light, &s, &found)).await.map_err(|e| e.to_string())
+}
+
+/// Saves new lighting settings into Settings (validated with the rest), so they replace only `lighting`.
+fn save_lighting(app: &App, l: &LightingSettings) -> Result<(), String> {
+    l.validate()?;
+    let mut all = app.settings.lock().unwrap().clone();
+    all.lighting = l.clone();
+    all.validate()?;
+    all.save()?;
+    *app.settings.lock().unwrap() = all;
+    Ok(())
+}
+
+/// Validates and saves the lighting settings, and writes them when the mode is custom.
+#[tauri::command]
+async fn lighting_set(app: State<'_, App>, settings: LightingSettings) -> Result<LightingStatus, String> {
+    save_lighting(&app, &settings)?;
+    let (light, found) = (app.light.clone(), app.keyboard_found.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        lights::apply_settings(&light, &settings);
+        lights::status(&light, &settings, &found)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// One key in one colour on the keyboard, not saved (the map's live preview; custom mode only).
+#[tauri::command]
+async fn lighting_preview_key(app: State<'_, App>, id: u32, color: String) -> Result<LightingStatus, String> {
+    let (s, light, found) = (app.settings.lock().unwrap().lighting.clone(), app.light.clone(), app.keyboard_found.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        lights::preview(&light, &s, id, &color)?;
+        Ok(lights::status(&light, &s, &found))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Lighting back to AWCC: mode awcc, and AWCC's own preset written to the keyboard.
+#[tauri::command]
+async fn lighting_restore_awcc(app: State<'_, App>) -> Result<LightingStatus, String> {
+    let mut s = app.settings.lock().unwrap().lighting.clone();
+    s.mode = Mode::Awcc;
+    save_lighting(&app, &s)?;
+    let (light, found) = (app.light.clone(), app.keyboard_found.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        lights::restore(&light, s.pause_awcc);
+        lights::status(&light, &s, &found)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Custom settings seeded from AWCC's look, key by key. The mode is kept and nothing is written.
+#[tauri::command]
+async fn lighting_import_awcc(app: State<'_, App>) -> Result<LightingStatus, String> {
+    let current = app.settings.lock().unwrap().lighting.clone();
+    let seeded = tauri::async_runtime::spawn_blocking(move || lights::import(&current)).await.map_err(|e| e.to_string())??;
+    save_lighting(&app, &seeded)?;
+    let (light, found) = (app.light.clone(), app.keyboard_found.clone());
+    tauri::async_runtime::spawn_blocking(move || lights::status(&light, &seeded, &found)).await.map_err(|e| e.to_string())
+}
+
+/// A power change: darkens or re-applies the keyboard by the settings' rules (custom mode only). Dark is
+/// written before this returns (before the laptop sleeps); a re-apply waits `after_ms` on its own thread.
+fn lighting_power_event(handle: &AppHandle, ev: PowerEvent) {
+    let app = handle.state::<App>();
+    let s = app.settings.lock().unwrap().lighting.clone();
+    let action = lightctl::on_power_event(&mut lights::lock(&app.light).power, ev, &s);
+    match action {
+        LightAction::Nothing => {}
+        LightAction::Dark => {
+            lights::apply_settings(&app.light, &s);
+        }
+        LightAction::Reapply { after_ms } => {
+            let h = handle.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(after_ms));
+                let app = h.state::<App>();
+                let s = app.settings.lock().unwrap().lighting.clone();
+                lights::apply_settings(&app.light, &s);
+            });
+        }
+    }
+}
+
+#[tauri::command]
 async fn game_library() -> Value {
     serde_json::to_value(games::read()).unwrap_or_default()
 }
@@ -133,7 +232,10 @@ async fn settings_get(app: State<'_, App>) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-async fn settings_set(app: State<'_, App>, settings: Settings) -> Result<Settings, String> {
+async fn settings_set(app: State<'_, App>, mut settings: Settings) -> Result<Settings, String> {
+    // Lighting is owned by the Lighting page (`lighting_set`). The Settings page sends the whole file from the
+    // copy it loaded, so its `lighting` block may be stale: keep the current one.
+    settings.lighting = app.settings.lock().unwrap().lighting.clone();
     settings.validate()?;
     let before = app.settings.lock().unwrap().autostart;
     if settings.autostart != before {
@@ -323,8 +425,21 @@ async fn controls(app: State<'_, App>) -> Result<Value, String> {
         "emergency": { "active": emergency, "triggerC": m.emergency.as_ref().map(|r| r.trigger_c()), "releaseC": m.emergency.as_ref().map(|r| r.release_c) },
         "modes": { "enabled": modes_ok, "route": route.ok(), "reasons": mode_reasons, "last": m.last },
         "fans": { "enabled": modes_ok && !emergency, "reasons": fan_reasons, "notes": fan_notes, "boosted": m.boosted.iter().map(|(f, l)| (format!("0x{f:02X}"), *l)).collect::<std::collections::BTreeMap<_, _>>() },
-        "lighting": { "enabled": false, "reasons": ["Writing lighting needs the lighting protocol port and a test on this keyboard. The firmware keeps the current colours."] },
+        "lighting": lighting_control(&app),
     }))
+}
+
+/// The lighting control's state for `controls`: enabled when the keyboard's lighting interface was found.
+fn lighting_control(app: &App) -> Value {
+    let found = app.keyboard_found.load(std::sync::atomic::Ordering::SeqCst);
+    let mode = app.settings.lock().unwrap().lighting.mode;
+    let reasons: Vec<&str> = if found { vec![] } else { vec!["The keyboard's lighting interface wasn't found."] };
+    json!({
+        "enabled": found,
+        "mode": mode,
+        "reasons": reasons,
+        "notes": ["Zone colours are sent but don't light on this laptop.", "In AWCC mode nothing is written: AWCC's look stays."],
+    })
 }
 
 #[tauri::command]
@@ -397,11 +512,14 @@ pub fn run() {
     }
     let readings: source::Shared = Arc::new(Mutex::new(source::State::default()));
     let demo = Arc::new(Mutex::new(settings.demo));
+    let (glow_keys, glow_rx) = glow::Keys::new();
+    let glow_keys = Arc::new(glow_keys);
+    let mut glow_rx = Some(glow_rx);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)))
         .plugin(tauri_plugin_notification::init())
-        .manage(App { readings: readings.clone(), modes: Arc::new(Mutex::new(Modes::default())), demo: demo.clone(), settings: Mutex::new(settings), health: Mutex::new(None), status_item: Mutex::new(None) })
-        .invoke_handler(tauri::generate_handler![status, history, health, drift, lighting, game_library, settings_get, settings_set, controls, set_mode, set_fan_boost, log_days, log_read, log_cleanup, open_alienware_update, restart_elevated])
+        .manage(App { readings: readings.clone(), modes: Arc::new(Mutex::new(Modes::default())), demo: demo.clone(), settings: Mutex::new(settings), health: Mutex::new(None), status_item: Mutex::new(None), light: Default::default(), keyboard_found: Default::default() })
+        .invoke_handler(tauri::generate_handler![status, history, health, drift, lighting, lighting_status, lighting_set, lighting_preview_key, lighting_restore_awcc, lighting_import_awcc, game_library, settings_get, settings_set, controls, set_mode, set_fan_boost, log_days, log_read, log_cleanup, open_alienware_update, restart_elevated])
         .setup(move |app| {
             if let Err(e) = install_tray(app.handle()) {
                 eprintln!("tray icon unavailable: {e}");
@@ -461,32 +579,70 @@ pub fn run() {
             #[cfg(windows)]
             {
                 let handle = app.handle().clone();
+                let keys = glow_keys.clone();
                 std::thread::spawn(move || {
                     let mut debounce = boostkey::Debounce::default();
                     let h = handle.clone();
-                    let r = boostkey::win::listen(move || {
-                        let awcc = { let mut s = sysinfo::System::new(); s.refresh_processes(sysinfo::ProcessesToUpdate::All, true); s.processes().values().any(|p| p.name().to_string_lossy().eq_ignore_ascii_case("AWCC.UCSubAgent.exe")) };
-                        if !boostkey::should_handle(boostkey::win::foreground_elevated(), awcc) || !debounce.accept(Instant::now()) {
-                            return;
-                        }
-                        let app = h.state::<App>();
-                        let current = app.readings.lock().unwrap().snapshot.as_ref().and_then(|s| s["profile"].as_u64()).map(|p| p as u8);
-                        let (default, behaviour) = {
-                            let s = app.settings.lock().unwrap();
-                            (wiregent_hw::control::parse_profile(&s.default_profile).unwrap_or(0xA0), s.boost_key.clone())
-                        };
-                        let target = boostkey::key_target(&behaviour, current, app.modes.lock().unwrap().previous, default);
-                        let (modes, readings, h2) = (app.modes.clone(), app.readings.clone(), h.clone());
-                        std::thread::spawn(move || {
-                            let text = match switch_mode(&modes, &readings, target) {
-                                Ok(c) => format!("{} (boost key)", c["after"].as_str().unwrap_or("Mode changed")),
-                                Err(e) => format!("Boost key: {e}"),
+                    let r = boostkey::win::listen(
+                        move || {
+                            let awcc = { let mut s = sysinfo::System::new(); s.refresh_processes(sysinfo::ProcessesToUpdate::All, true); s.processes().values().any(|p| p.name().to_string_lossy().eq_ignore_ascii_case("AWCC.UCSubAgent.exe")) };
+                            if !boostkey::should_handle(boostkey::win::foreground_elevated(), awcc) || !debounce.accept(Instant::now()) {
+                                return;
+                            }
+                            let app = h.state::<App>();
+                            let current = app.readings.lock().unwrap().snapshot.as_ref().and_then(|s| s["profile"].as_u64()).map(|p| p as u8);
+                            let (default, behaviour) = {
+                                let s = app.settings.lock().unwrap();
+                                (wiregent_hw::control::parse_profile(&s.default_profile).unwrap_or(0xA0), s.boost_key.clone())
                             };
-                            let _ = h2.notification().builder().title("Alien Cockpit").body(&text).show();
-                        });
-                    });
+                            let target = boostkey::key_target(&behaviour, current, app.modes.lock().unwrap().previous, default);
+                            let (modes, readings, h2) = (app.modes.clone(), app.readings.clone(), h.clone());
+                            std::thread::spawn(move || {
+                                let text = match switch_mode(&modes, &readings, target) {
+                                    Ok(c) => format!("{} (boost key)", c["after"].as_str().unwrap_or("Mode changed")),
+                                    Err(e) => format!("Boost key: {e}"),
+                                };
+                                let _ = h2.notification().builder().title("Alien Cockpit").body(&text).show();
+                            });
+                        },
+                        // Every key-down, for the reactive glow (dropped at once while it isn't running).
+                        move |make, flags| keys.key_down(make, flags),
+                    );
                     if let Err(e) = r {
                         eprintln!("boost key listener unavailable: {e:#}");
+                    }
+                });
+                // The reactive glow: its own thread, frames under the lighting lock.
+                if let Some(rx) = glow_rx.take() {
+                    let handle = app.handle().clone();
+                    let (light, keys) = (app.state::<App>().light.clone(), glow_keys.clone());
+                    std::thread::spawn(move || glow::run(light, keys, rx, move || handle.state::<App>().settings.lock().unwrap().lighting.clone()));
+                }
+            }
+            // Lighting: find the keyboard (read-only probe), and in custom mode put the person's look back on
+            // it (AWCC sets its own at sign-in).
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                // Before anything else: AWCC's lighting programs resumed once, in case this app crashed while
+                // its 2 s pause lease held them (see `Pauser::recover`).
+                lights::recover();
+                let app = handle.state::<App>();
+                let s = app.settings.lock().unwrap().lighting.clone();
+                let _ = lights::status(&app.light, &s, &app.keyboard_found);
+                if s.mode == Mode::Custom {
+                    std::thread::sleep(Duration::from_millis(lightctl::RESUME_DELAY_MS));
+                    let s = app.settings.lock().unwrap().lighting.clone();
+                    lights::apply_settings(&app.light, &s);
+                }
+            });
+            // Power changes darken and restore the keyboard (custom mode only).
+            #[cfg(windows)]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let h = handle.clone();
+                    if let Err(e) = lights::win::listen(move |ev| lighting_power_event(&h, ev)) {
+                        eprintln!("power notifications unavailable: {e:#}");
                     }
                 });
             }
@@ -539,6 +695,9 @@ pub fn run() {
                 let modes = &app.state::<App>().modes;
                 reset_boost(modes);
                 forget_raised(modes);
+                // The reactive glow stops with the static colours written back; AWCC's lighting programs resume
+                // now if a lighting write still holds them.
+                lights::quit(&app.state::<App>().light);
             }
             _ => {}
         });

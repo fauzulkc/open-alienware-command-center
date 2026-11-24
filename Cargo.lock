@@ -645,6 +645,7 @@ dependencies = [
 name = "cockpit-core"
 version = "0.1.0"
 dependencies = [
+ "alienfx",
  "anyhow",
  "dirs 5.0.1",
  "rusqlite",

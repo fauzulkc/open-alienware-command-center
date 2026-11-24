@@ -8,10 +8,12 @@
 //! Exit codes: 0 ok, 1 error, 2 refused by a gate or not supported here (usage errors are 2 as well).
 //!
 //! [`run`] takes the arguments and a writer and returns the exit code, so tests drive every command with
-//! `--backend demo` and read what it printed.
+//! `--backend demo` and read what it printed. [`run_with_lights`] also takes the lighting devices, so tests
+//! hand `cockpit lighting` a fake keyboard (`cockpit_core::lightctl::FakeIo`) and never reach the real one.
 
 use clap::{Parser, Subcommand};
-use cockpit_core::{boostkey, log, readout, Settings};
+use cockpit_core::lightctl::{self, KeyEffect, LightIo, LightingSettings, Mode, PowerState, Shown};
+use cockpit_core::{boostkey, log, mousepaint, reactive, readout, screenmirror, Settings};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::io::Write;
@@ -91,9 +93,15 @@ pub enum Cmd {
     },
     /// Dell's services against the rules you set (Windows only).
     Drift,
-    /// Keyboard and zone lighting, read-only (Windows only).
-    #[command(subcommand)]
-    Lighting(LightingCmd),
+    /// Keyboard lighting: AWCC's look, and the keyboard's colours, brightness and effects (writes are Windows
+    /// only). Changes save the app's own lighting settings; they are written when the mode is custom.
+    Lighting {
+        /// Print the reports a command would send, and change nothing (no save, no write).
+        #[arg(long, global = true)]
+        dry_run: bool,
+        #[command(subcommand)]
+        cmd: LightingCmd,
+    },
     /// AWCC's game library (Windows only).
     Games,
     /// The daily log.
@@ -126,6 +134,109 @@ pub enum LightingCmd {
     Probe,
     /// The lighting AWCC has set, from its database (a read-only copy).
     Show,
+    /// The lighting settings, the key layout, the devices found and AWCC's look.
+    Status,
+    /// Every key's base colour (#RRGGBB).
+    Color { color: String },
+    /// One of AWCC's key groups (Function Keys, Numbers, QWER, WASD) in a colour, over the base.
+    Group { name: String, color: String },
+    /// One key, by id (0-135) or name ("Esc", "Left Shift"), in a colour, over its group.
+    Key { key: String, color: String },
+    /// Backlight brightness, 0-100 %.
+    Brightness { percent: u32 },
+    /// Backlight off (colours kept).
+    Off,
+    /// Backlight on.
+    On,
+    /// static (per-key colours) or a keyboard effect: breathing, wave, dual-wave, pulse, mix-pulse,
+    /// night-rider, laser.
+    Effect {
+        effect: String,
+        /// 0-255, passed through as alien-tools sends it.
+        #[arg(long)]
+        tempo: Option<u32>,
+        /// The second colour for dual-wave and mix-pulse.
+        #[arg(long, value_name = "#RRGGBB")]
+        color2: Option<String>,
+    },
+    /// Write AWCC's own look back to the keyboard and hand lighting back to AWCC (mode awcc).
+    RestoreAwcc,
+    /// Seed the custom settings from AWCC's look, key by key (nothing is written).
+    ImportAwcc,
+    /// awcc: AWCC's look stays and nothing is written; custom: these settings are written now and kept.
+    Mode {
+        #[arg(value_parser = ["awcc", "custom"])]
+        mode: String,
+    },
+    /// The reactive glow in the foreground (Windows): keys warm up as you press them, with the saved custom
+    /// colours and glow settings. Ctrl+C or --seconds stops it and writes the static colours back. Key
+    /// presses are read with Raw Input, read-only, and never stored. --dry-run simulates typing instead and
+    /// prints how many reports each second would send.
+    Reactive {
+        /// Stop after this many seconds (default: until Ctrl+C; a dry run simulates 10).
+        #[arg(long, value_name = "N")]
+        seconds: Option<u64>,
+    },
+    /// The local time across the whole keyboard, in the foreground: h:mm in big digits (hour peach, minutes
+    /// cyan) with a steady pink colon, and for 5 s of every 15 the seconds in big pink digits.
+    /// Ctrl+C or --seconds stops it and writes the static colours back.
+    Clock {
+        /// Stop after this many seconds (default: until Ctrl+C; a dry run simulates 10).
+        #[arg(long, value_name = "N")]
+        seconds: Option<u64>,
+        /// The other keys: off (dark), dim (the static colours dimmed), or preset (as they are).
+        #[arg(long, default_value = "off", value_parser = ["off", "dim", "preset"])]
+        base: String,
+    },
+    /// Mouse paint, in the foreground (Windows): the screen mapped onto the keyboard; the key under the mouse
+    /// pointer lights up and fades back (--fade-ms), so the mouse leaves a trail. Looks: glow (your colours
+    /// stay, the mouse lights keys white), uncover (white keyboard, the mouse shows each key's own colour),
+    /// reveal (dark keyboard, the mouse brings each key's own colour through), boost (your colours
+    /// dimmed to --dim %, the mouse brings keys to full), screen (dark keyboard, the screen's colour under the pointer).
+    /// The pointer's position is polled (no input hook). Ctrl+C or --seconds stops it and writes the static
+    /// colours back.
+    Mouse {
+        /// Stop after this many seconds (default: until Ctrl+C; a dry run simulates 5).
+        #[arg(long, value_name = "N")]
+        seconds: Option<u64>,
+        /// Writes a second at most, 1-30.
+        #[arg(long, default_value_t = 10)]
+        fps: u32,
+        /// How long a painted key takes to fade back, ms (0 keeps the paint), 0-10000.
+        #[arg(long, default_value_t = cockpit_core::mousepaint::DEFAULT_FADE_MS)]
+        fade_ms: u64,
+        /// For look boost: the dimmed keys' brightness, % of your colours, 1-100.
+        #[arg(long, default_value_t = cockpit_core::mousepaint::DEFAULT_DIM_PCT)]
+        dim: u32,
+        /// glow, uncover, reveal, boost or screen.
+        #[arg(long, default_value = "glow", value_parser = ["glow", "uncover", "reveal", "boost", "screen"])]
+        look: String,
+    },
+    /// Screen mirror, in the foreground (Windows): the keyboard as an ambient light for the screen. The screen
+    /// maps onto the keys as in mouse paint (top-left = Esc, bottom-right = Right Arrow); the whole keyboard is
+    /// one gradient of the screen's areas, pulled toward its average (--spread), deepened (--saturation) and
+    /// eased (--smooth-ms), all keys updated together. Ctrl+C or --seconds stops it and writes the static
+    /// colours back.
+    Screen {
+        /// Stop after this many seconds (default: until Ctrl+C; a dry run simulates 5).
+        #[arg(long, value_name = "N")]
+        seconds: Option<u64>,
+        /// Writes a second at most, 1-30.
+        #[arg(long, default_value_t = cockpit_core::screenmirror::DEFAULT_FPS)]
+        fps: u32,
+        /// How slowly the keys follow the screen: the ease's time constant, ms, 0-10000.
+        #[arg(long, default_value_t = cockpit_core::screenmirror::DEFAULT_SMOOTH_MS)]
+        smooth_ms: u64,
+        /// 0-1: how much the screen's areas keep their own colours (0 = the whole keyboard one average colour).
+        #[arg(long, default_value_t = cockpit_core::screenmirror::DEFAULT_SPREAD)]
+        spread: f64,
+        /// 1-4: how much deeper the colours are than the screen's averages (1 = as averaged).
+        #[arg(long, default_value_t = cockpit_core::screenmirror::DEFAULT_SATURATION)]
+        saturation: f64,
+        /// gpu: read the screen on the graphics card (least processor, more memory); cpu: through GDI.
+        #[arg(long, default_value = "gpu", value_parser = ["gpu", "cpu"])]
+        reader: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -262,6 +373,15 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    run_with_lights(args, out, clock, machine, None)
+}
+
+/// [`run_with`] with the lighting devices given too (tests pass `FakeIo`; `None` is the real ones).
+pub fn run_with_lights<I, T>(args: I, out: &mut dyn Write, clock: &mut dyn Clock, machine: Option<Box<dyn Machine>>, lights: Option<Box<dyn LightIo>>) -> i32
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
     let cli = match Cli::try_parse_from(args) {
         Ok(c) => c,
         Err(e) => {
@@ -274,7 +394,7 @@ where
     };
     let json = cli.json;
     let result = {
-        let mut ctx = Ctx { json, out: &mut *out, backend: cli.backend, config_dir: cli.config_dir, clock, machine };
+        let mut ctx = Ctx { json, out: &mut *out, backend: cli.backend, config_dir: cli.config_dir, clock, machine, lights };
         dispatch(&mut ctx, cli.cmd)
     };
     let (code, kind, text) = match result {
@@ -294,6 +414,7 @@ struct Ctx<'a> {
     config_dir: Option<PathBuf>,
     clock: &'a mut dyn Clock,
     machine: Option<Box<dyn Machine>>,
+    lights: Option<Box<dyn LightIo>>,
 }
 
 impl Ctx<'_> {
@@ -351,8 +472,9 @@ fn dispatch(ctx: &mut Ctx, cmd: Cmd) -> R {
         Cmd::Guard { trigger, count } => guard(ctx, trigger, count),
         Cmd::Health { days } => health(ctx, days),
         Cmd::Drift => drift(ctx),
-        Cmd::Lighting(LightingCmd::Probe) => lighting_probe(ctx),
-        Cmd::Lighting(LightingCmd::Show) => lighting_show(ctx),
+        Cmd::Lighting { cmd: LightingCmd::Probe, .. } => lighting_probe(ctx),
+        Cmd::Lighting { cmd: LightingCmd::Show, .. } => lighting_show(ctx),
+        Cmd::Lighting { cmd, dry_run } => lighting_cmd(ctx, cmd, dry_run),
         Cmd::Games => games(ctx),
         Cmd::Log(LogCmd::Days) => log_days(ctx),
         Cmd::Log(LogCmd::Read { day, max }) => log_read(ctx, &day, max),
@@ -790,6 +912,558 @@ fn games(ctx: &mut Ctx) -> R {
 #[cfg(not(windows))]
 fn games(_ctx: &mut Ctx) -> R {
     Err(windows_only("games"))
+}
+
+// ---------------------------------------------------------------- lighting control
+
+impl Ctx<'_> {
+    /// The lighting devices: the test's, or the real ones.
+    fn light_io(&mut self) -> Box<dyn LightIo> {
+        self.lights.take().unwrap_or_else(|| Box::new(lightctl::SystemIo))
+    }
+
+    /// Writes (and reading AWCC's look) need Windows, unless a test gave the devices.
+    fn lights_here(&self) -> R {
+        if self.lights.is_none() && !cfg!(windows) {
+            return Err(Fail::Refused(format!("{}: the keyboard is written through Windows' HID driver", lightctl::WINDOWS_ONLY)));
+        }
+        Ok(())
+    }
+}
+
+fn lighting_cmd(ctx: &mut Ctx, cmd: LightingCmd, dry_run: bool) -> R {
+    match cmd {
+        LightingCmd::Probe | LightingCmd::Show => unreachable!("dispatched above"),
+        LightingCmd::Status => lighting_status(ctx),
+        LightingCmd::Color { color } => lighting_change(ctx, dry_run, move |l| {
+            l.keyboard.color = color;
+            Ok(())
+        }),
+        LightingCmd::Group { name, color } => {
+            let g = alienfx::x17::group(&name).ok_or_else(|| Fail::Refused(format!("'{name}' isn't a key group: use {}", lightctl::group_names().join(", "))))?;
+            lighting_change(ctx, dry_run, move |l| {
+                l.keyboard.groups.insert(g.name.to_string(), color);
+                Ok(())
+            })
+        }
+        LightingCmd::Key { key, color } => {
+            let id = key.trim().parse::<u32>().ok().or_else(|| alienfx::x17::by_name(&key).map(|k| k.id as u32)).ok_or_else(|| Fail::Refused(format!("'{key}' isn't a key: use an id (0-135) or a name like Esc or Left Shift")))?;
+            lighting_change(ctx, dry_run, move |l| {
+                l.keyboard.keys.insert(id, color);
+                Ok(())
+            })
+        }
+        LightingCmd::Brightness { percent } => lighting_change(ctx, dry_run, move |l| {
+            l.keyboard.brightness = percent;
+            Ok(())
+        }),
+        LightingCmd::Off => lighting_change(ctx, dry_run, |l| {
+            l.keyboard.on = false;
+            Ok(())
+        }),
+        LightingCmd::On => lighting_change(ctx, dry_run, |l| {
+            l.keyboard.on = true;
+            Ok(())
+        }),
+        LightingCmd::Effect { effect, tempo, color2 } => {
+            let e = KeyEffect::parse(&effect).ok_or_else(|| Fail::Refused(format!("'{effect}' isn't an effect: use {}", KeyEffect::ALL.iter().map(|e| e.name()).collect::<Vec<_>>().join(", "))))?;
+            lighting_change(ctx, dry_run, move |l| {
+                l.keyboard.effect = e;
+                if let Some(t) = tempo {
+                    l.keyboard.tempo = t;
+                }
+                if let Some(c) = color2 {
+                    l.keyboard.color2 = c;
+                }
+                Ok(())
+            })
+        }
+        LightingCmd::Mode { mode } => lighting_change(ctx, dry_run, move |l| {
+            l.mode = if mode == "custom" { Mode::Custom } else { Mode::Awcc };
+            Ok(())
+        }),
+        LightingCmd::RestoreAwcc => lighting_restore(ctx, dry_run),
+        LightingCmd::ImportAwcc => lighting_import(ctx, dry_run),
+        LightingCmd::Reactive { seconds } => lighting_reactive(ctx, seconds, dry_run),
+        LightingCmd::Clock { seconds, base } => lighting_clock(ctx, seconds, &base, dry_run),
+        LightingCmd::Screen { seconds, fps, smooth_ms, spread, saturation, reader } => lighting_screen(ctx, seconds, screenmirror::Ambient { fps, smooth_ms, spread, saturation }, reader == "gpu", dry_run),
+        LightingCmd::Mouse { seconds, fps, fade_ms, dim, look } => lighting_mouse(ctx, seconds, fps, fade_ms, dim, &look, dry_run),
+    }
+}
+
+fn lighting_summary(l: &LightingSettings) -> String {
+    let k = &l.keyboard;
+    let yes = |b: bool| if b { "yes" } else { "no" };
+    let mode = match l.mode {
+        Mode::Awcc => "awcc: AWCC's look stays (nothing is written)",
+        Mode::Custom => "custom: these settings are written to the keyboard",
+    };
+    let effect = if k.effect == KeyEffect::Static { "static".to_string() } else { format!("{} (tempo {}, colours {} {})", k.effect.name(), k.tempo, k.color, k.color2) };
+    format!(
+        "{:<12}{mode}\n{:<12}{}, {} %, {effect}, base {}, {} group colour(s), {} key colour(s)\n{:<12}dark on sleep: {}, lid closed: {}, display off: {}; 30 % on Energy Saver: {}; pause AWCC: {}\n",
+        "Mode",
+        "Keyboard",
+        if k.on { "on" } else { "off" },
+        k.brightness,
+        k.color,
+        k.groups.len(),
+        k.keys.len(),
+        "Power",
+        yes(l.off_on_sleep),
+        yes(l.off_on_lid_close),
+        yes(l.off_on_display_off),
+        yes(l.dim_on_battery_saver),
+        yes(l.pause_awcc),
+    )
+}
+
+fn lighting_status(ctx: &mut Ctx) -> R {
+    let l = Settings::load_from(&ctx.settings_path()).lighting;
+    let mut io = ctx.light_io();
+    let awcc = io.awcc().ok().flatten();
+    let device = io.detect();
+    let st = lightctl::status(&l, awcc, device, None);
+    let mut t = lighting_summary(&l);
+    let d = &st.device;
+    t.push_str(&format!(
+        "{:<12}keyboard {}; zone controller {}{}\n",
+        "Devices",
+        if d.keyboard { "found" } else { "not found" },
+        if d.zones { "found (its lights don't show on this laptop)" } else { "not found" },
+        d.error.as_ref().map_or(String::new(), |e| format!(" ({e})"))
+    ));
+    match &st.awcc {
+        Some(a) => t.push_str(&format!("{:<12}\"{}\", {} key(s)\n", "AWCC", a.preset, a.keys.len())),
+        None => t.push_str(&format!("{:<12}no keyboard preset read\n", "AWCC")),
+    }
+    ctx.emit(serde_json::to_value(&st).unwrap_or_default(), &t)
+}
+
+/// A dry run's output: what would be sent, nothing saved or written.
+fn dry_run_doc(l: &LightingSettings, kb: &[String], zones: &[String], note: &str) -> (Value, String) {
+    let mut t = format!("Dry run: nothing saved, nothing sent. {note}\n");
+    if !kb.is_empty() {
+        t.push_str(&format!("Keyboard ({} step(s)):\n", kb.len()));
+        kb.iter().for_each(|r| t.push_str(&format!("  {r}\n")));
+    }
+    if !zones.is_empty() {
+        t.push_str(&format!("Zone controller ({} step(s), not visible on this laptop):\n", zones.len()));
+        zones.iter().for_each(|r| t.push_str(&format!("  {r}\n")));
+    }
+    (json!({ "dryRun": true, "settings": l, "keyboard": kb, "zones": zones, "note": note }), t)
+}
+
+/// One change to the lighting settings: validated, saved to the app's file, and written when the mode is
+/// custom (with AWCC paused when `pauseAwcc`). `--dry-run` prints the reports instead.
+fn lighting_change(ctx: &mut Ctx, dry_run: bool, f: impl FnOnce(&mut LightingSettings) -> R) -> R {
+    let path = ctx.settings_path();
+    let mut all = Settings::load_from(&path);
+    // What the keyboard shows now, as far as the saved settings say (AWCC's own state in awcc mode): only
+    // what changes from it is sent.
+    let prev = shown_by(&all.lighting);
+    let mut l = all.lighting.clone();
+    f(&mut l)?;
+    l.validate().map_err(Fail::Refused)?;
+    all.lighting = l.clone();
+    all.validate().map_err(Fail::Refused)?;
+    let custom = l.mode == Mode::Custom;
+    let power = PowerState::default();
+    if dry_run {
+        let (kb, zones) = if custom { (lightctl::plan_from(prev, &l, &power).map_err(Fail::Refused)?, lightctl::zone_plan(&l, &power).map_err(Fail::Refused)?) } else { (Vec::new(), Vec::new()) };
+        let note = if custom { "Mode custom: a real run saves and sends these." } else { "Mode awcc: a real run saves, and sends nothing." };
+        let (v, t) = dry_run_doc(&l, &lightctl::describe(&kb), &lightctl::describe(&zones), note);
+        return ctx.emit(v, &t);
+    }
+    ctx.lights_here()?;
+    all.save_to(&path).map_err(Fail::Error)?;
+    if !custom {
+        let t = format!("{}Saved to {}. Not written: the mode is awcc, so AWCC's look stays (`cockpit lighting mode custom` writes these).", lighting_summary(&l), path.display());
+        return ctx.emit(json!({ "settings": l, "saved": path, "applied": false }), &t);
+    }
+    let mut io = ctx.light_io();
+    let pauser = io.pauser();
+    // Before anything else: AWCC resumed once, in case a crash left it paused (see `Pauser::recover`).
+    pauser.recover();
+    match lightctl::write_from(io.as_mut(), prev, &l, &power, l.pause_awcc.then_some(pauser.as_ref())) {
+        Ok(a) => {
+            let t = format!("{}Saved to {}. Written: {}", lighting_summary(&l), path.display(), a.text());
+            ctx.emit(json!({ "settings": l, "saved": path, "applied": true, "result": a }), &t)
+        }
+        Err(e) => Err(Fail::Error(format!("saved to {}, but writing the keyboard failed: {e}", path.display()))),
+    }
+}
+
+/// What the keyboard shows under these saved settings: theirs in custom mode, AWCC's own state otherwise.
+fn shown_by(l: &LightingSettings) -> Shown {
+    if l.mode == Mode::Custom {
+        Shown::of(l, &PowerState::default())
+    } else {
+        Shown::AWCC
+    }
+}
+
+fn awcc_look(io: &mut dyn LightIo) -> Result<lightctl::AwccLook, Fail> {
+    io.awcc().map_err(Fail::Error)?.ok_or_else(|| Fail::Error("AWCC has no active keyboard preset".into()))
+}
+
+fn lighting_restore(ctx: &mut Ctx, dry_run: bool) -> R {
+    ctx.lights_here()?;
+    let path = ctx.settings_path();
+    let mut all = Settings::load_from(&path);
+    let mut io = ctx.light_io();
+    if !dry_run {
+        // Before anything else: AWCC resumed once, in case a crash left it paused (see `Pauser::recover`).
+        io.pauser().recover();
+    }
+    let look = awcc_look(io.as_mut())?;
+    let prev = shown_by(&all.lighting);
+    let mut l = all.lighting.clone();
+    l.mode = Mode::Awcc;
+    if dry_run {
+        let steps = lightctl::restore_awcc_plan_from(prev, &look).map_err(Fail::Refused)?;
+        let (v, t) = dry_run_doc(&l, &lightctl::describe(&steps), &[], &format!("A real run writes AWCC's \"{}\" and sets the mode to awcc.", look.preset));
+        return ctx.emit(v, &t);
+    }
+    all.lighting = l.clone();
+    all.save_to(&path).map_err(Fail::Error)?;
+    let pauser = io.pauser();
+    let (look, a) = lightctl::restore_from(io.as_mut(), prev, l.pause_awcc.then_some(pauser.as_ref())).map_err(|e| Fail::Error(format!("the mode is awcc again, but writing AWCC's look failed: {e}")))?;
+    let t = format!("AWCC's \"{}\" is back on the keyboard ({} keys) and lighting is AWCC's again (mode awcc). {}", look.preset, look.keys.len(), a.text());
+    ctx.emit(json!({ "settings": l, "awcc": look, "result": a }), &t)
+}
+
+fn lighting_import(ctx: &mut Ctx, dry_run: bool) -> R {
+    ctx.lights_here()?;
+    let path = ctx.settings_path();
+    let mut all = Settings::load_from(&path);
+    let mut io = ctx.light_io();
+    let look = awcc_look(io.as_mut())?;
+    let l = lightctl::import_awcc(&all.lighting, &look);
+    l.validate().map_err(Fail::Refused)?;
+    let t = format!("Seeded from AWCC's \"{}\": base {}, {} key colour(s). Nothing written.", look.preset, l.keyboard.color, l.keyboard.keys.len());
+    if dry_run {
+        let (v, t) = dry_run_doc(&l, &[], &[], &t);
+        return ctx.emit(v, &t);
+    }
+    all.lighting = l.clone();
+    all.save_to(&path).map_err(Fail::Error)?;
+    let t = format!("{t} Saved to {}; `cockpit lighting mode custom` writes them.", path.display());
+    ctx.emit(json!({ "settings": l, "saved": path, "applied": false }), &t)
+}
+
+// ---------------------------------------------------------------- the reactive glow
+
+/// The command line's clock, for the glow's loop.
+struct GlowClock<'a>(&'a mut dyn Clock);
+
+impl reactive::Clock for GlowClock<'_> {
+    fn now_ms(&mut self) -> u64 {
+        self.0.now_ms()
+    }
+    fn sleep_ms(&mut self, ms: u64) {
+        self.0.sleep_ms(ms)
+    }
+    fn stopped(&self) -> bool {
+        self.0.stopped()
+    }
+}
+
+/// A dry run's clock: simulated time, no sleeping.
+#[derive(Default)]
+struct SimClock(u64);
+
+impl reactive::Clock for SimClock {
+    fn now_ms(&mut self) -> u64 {
+        self.0
+    }
+    fn sleep_ms(&mut self, ms: u64) {
+        self.0 += ms;
+    }
+}
+
+/// What a dry run types, over and over, at [`DRY_KEYS_PER_S`].
+const DRY_TEXT: &str = "the quick brown fox jumps over the lazy dog; fn main() { let x = 42; } ";
+const DRY_KEYS_PER_S: u32 = 8;
+
+fn per_s(reports: &[usize]) -> String {
+    if reports.is_empty() {
+        return "0".into();
+    }
+    format!("{:.0}", reports.iter().sum::<usize>() as f64 / reports.len() as f64)
+}
+
+/// `cockpit lighting reactive`: the glow in the foreground until Ctrl+C or `--seconds`, then the static
+/// colours back. `--dry-run`: scripted typing (60 % of the time, then idle) on a fake keyboard, and the
+/// report counts; nothing is saved or sent. The saved settings are used, never changed.
+fn lighting_reactive(ctx: &mut Ctx, seconds: Option<u64>, dry_run: bool) -> R {
+    let saved = Settings::load_from(&ctx.settings_path()).lighting;
+    let power = PowerState::default();
+    if dry_run {
+        let mut l = saved;
+        l.mode = Mode::Custom;
+        l.keyboard.effect = KeyEffect::Static;
+        l.keyboard.on = true;
+        if l.keyboard.brightness == 0 {
+            l.keyboard.brightness = 100;
+        }
+        l.reactive.on = true;
+        l.validate().map_err(Fail::Refused)?;
+        let secs = seconds.unwrap_or(10).max(1);
+        let typing_ms = secs * 600;
+        let text = DRY_TEXT.repeat((typing_ms / 1_000 * DRY_KEYS_PER_S as u64 / DRY_TEXT.len() as u64 + 1) as usize);
+        let script: Vec<(u64, u8)> = reactive::script(&text, 0, DRY_KEYS_PER_S).into_iter().filter(|(t, _)| *t < typing_ms).collect();
+        let mut next = 0;
+        let io = lightctl::FakeIo::default();
+        let sum = reactive::run(
+            &mut io.clone(),
+            &l,
+            &power,
+            Shown::of(&l, &power),
+            None,
+            &mut SimClock::default(),
+            &mut |now| {
+                let mut out = Vec::new();
+                while next < script.len() && script[next].0 <= now {
+                    out.push(script[next].1);
+                    next += 1;
+                }
+                out
+            },
+            &mut |now| now >= secs * 1_000,
+        )
+        .map_err(Fail::Error)?;
+        // The seconds that had key presses (rounded up), and the rest.
+        let typing_s = typing_ms.div_ceil(1_000) as usize;
+        let (typing, idle) = sum.per_second.split_at(typing_s.min(sum.per_second.len()));
+        // The first second also carries the full frame: leave it out when there are later typing seconds.
+        let typing = if typing.len() > 1 { &typing[1..] } else { typing };
+        let st = &sum.stats;
+        let r = &l.reactive;
+        let mut t = format!("Dry run: nothing saved, nothing sent. Simulated {} key presses at {DRY_KEYS_PER_S} a second for {:.1} s, then idle to {secs} s, at {} fps, fade {} ms.\n", script.len(), typing_ms as f64 / 1_000.0, r.fps, r.decay_ms);
+        t.push_str(&format!("First frame: {} reports (all 91 keys). Then {} frames with changes: {} reports, {} key colours, at most {} reports a frame.\n", st.first, st.frames, st.reports, st.keys, st.max_frame_reports));
+        t.push_str(&format!("Reports each second: {}\n", sum.per_second.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" ")));
+        t.push_str(&format!("About {} reports a second while typing, {} after it. Stopping writes the static colours back: {} reports.", per_s(typing), per_s(idle), sum.restore.keyboard));
+        let v = json!({ "dryRun": true, "simulated": { "presses": script.len(), "keysPerSecond": DRY_KEYS_PER_S, "typingMs": typing_ms, "seconds": secs }, "settings": l.reactive, "summary": sum });
+        return ctx.emit(v, &t);
+    }
+    if !cfg!(windows) {
+        return Err(Fail::Refused("`cockpit lighting reactive` is Windows only: it reads key presses with Raw Input and writes the keyboard through Windows' HID driver. `--dry-run` simulates it here.".into()));
+    }
+    let mut l = saved;
+    l.reactive.on = true;
+    reactive::eligible(&l, &power).map_err(|e| Fail::Refused(format!("{e} (`cockpit lighting mode custom` and `cockpit lighting effect static` set it up)")))?;
+    // Key presses only from the real keyboard: a test's devices get none.
+    let listen = ctx.lights.is_none();
+    let mut io = ctx.light_io();
+    let pauser = io.pauser();
+    // Before anything else: AWCC resumed once, in case a crash left it paused (see `Pauser::recover`).
+    pauser.recover();
+    let (tx, rx) = std::sync::mpsc::channel::<u8>();
+    #[cfg(windows)]
+    if listen {
+        std::thread::spawn(move || {
+            let r = cockpit_core::keyinput::win::listen("CockpitReactiveGlow", move |make, flags| {
+                if let Some(id) = cockpit_core::keyinput::led_for(make, flags) {
+                    let _ = tx.send(id);
+                }
+            });
+            if let Err(e) = r {
+                eprintln!("key presses can't be read: {e:#}");
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    drop((tx, listen));
+    if !ctx.json {
+        let until = seconds.map_or("Ctrl+C stops it".to_string(), |s| format!("it stops after {s} s or on Ctrl+C"));
+        writeln!(ctx.out, "Reactive glow on: keys warm up as you press them; {until} and the static colours come back.")?;
+        ctx.out.flush()?;
+    }
+    ctx.clock.catch_stop();
+    let start = ctx.clock.now_ms();
+    let prev = shown_by(&l);
+    let result = reactive::run(io.as_mut(), &l, &power, prev, l.pause_awcc.then_some(pauser.as_ref()), &mut GlowClock(&mut *ctx.clock), &mut |_| rx.try_iter().collect(), &mut |now| seconds.is_some_and(|s| now.saturating_sub(start) >= s * 1_000));
+    let sum = result.map_err(Fail::Error)?;
+    let st = &sum.stats;
+    let t = format!("Reactive glow stopped after {:.1} s: {} frames, {} reports after the first {}. The static colours are back: {}", sum.ran_ms as f64 / 1_000.0, st.frames, st.reports, st.first, sum.restore.text());
+    ctx.emit(json!({ "summary": sum }), &t)
+}
+
+// ---------------------------------------------------------------- the clock
+
+/// `cockpit lighting clock`: the local time on the keys until Ctrl+C or `--seconds`, then the static colours
+/// back. `--dry-run`: 10 simulated seconds on a fake keyboard, and the report counts.
+fn lighting_clock(ctx: &mut Ctx, seconds: Option<u64>, base: &str, dry_run: bool) -> R {
+    use cockpit_core::clock;
+    let base = clock::ClockBase::parse(base).ok_or_else(|| Fail::Refused(format!("'{base}' isn't a base: use dim, off or preset")))?;
+    let mut l = Settings::load_from(&ctx.settings_path()).lighting;
+    let power = PowerState::default();
+    if dry_run {
+        l.mode = Mode::Custom;
+        l.keyboard.on = true;
+        if l.keyboard.brightness == 0 {
+            l.keyboard.brightness = 100;
+        }
+        let secs = seconds.unwrap_or(10).max(1);
+        let start = clock::local_now();
+        let start_s = start.h as u64 * 3_600 + start.m as u64 * 60 + start.s as u64;
+        let mut sim = SimClock::default();
+        let mut t = 0u64;
+        let io = lightctl::FakeIo::default();
+        let sum = clock::run(&mut io.clone(), &l, &power, Shown::of(&l, &power), None, base, &mut sim, &mut || {
+            t += clock::POLL_MS;
+            clock::Hms::from_secs(start_s + t / 1_000)
+        }, &mut |now| now >= secs * 1_000)
+        .map_err(Fail::Error)?;
+        let text = format!("Dry run: nothing saved, nothing sent. {secs} simulated seconds: first face {} reports, then {} changes, {} reports, {} key colours ({:.1} reports a second). Stopping writes the static colours back: {} reports.", sum.first, sum.frames, sum.reports, sum.keys, sum.reports as f64 / secs as f64, sum.restore.keyboard);
+        return ctx.emit(json!({ "dryRun": true, "summary": sum }), &text);
+    }
+    ctx.lights_here()?;
+    clock::eligible(&l, &power).map_err(|e| Fail::Refused(format!("{e} (`cockpit lighting mode custom` sets it up)")))?;
+    let mut io = ctx.light_io();
+    let pauser = io.pauser();
+    pauser.recover();
+    if !ctx.json {
+        let until = seconds.map_or("Ctrl+C stops it".to_string(), |s| format!("it stops after {s} s or on Ctrl+C"));
+        writeln!(ctx.out, "Clock on: h:mm in big digits across the keyboard (hour peach, minutes cyan), a steady colon, the seconds in big pink digits for 5 s of every 15; {until} and the static colours come back.")?;
+        ctx.out.flush()?;
+    }
+    ctx.clock.catch_stop();
+    let start = ctx.clock.now_ms();
+    let prev = shown_by(&l);
+    let sum = clock::run(io.as_mut(), &l, &power, prev, l.pause_awcc.then_some(pauser.as_ref()), base, &mut GlowClock(&mut *ctx.clock), &mut clock::local_now, &mut |now| seconds.is_some_and(|s| now.saturating_sub(start) >= s * 1_000)).map_err(Fail::Error)?;
+    let t = format!("Clock stopped after {:.1} s: {} changes, {} reports after the first {}. The static colours are back: {}", sum.ran_ms as f64 / 1_000.0, sum.frames, sum.reports, sum.first, sum.restore.text());
+    ctx.emit(json!({ "summary": sum }), &t)
+}
+
+// ---------------------------------------------------------------- mouse paint
+
+/// A dry run's pointer: a diagonal sweep over a 1920 x 1080 screen in 2 s, a colour per quarter of it.
+struct SimPointer(u64);
+
+impl mousepaint::PointerSource for SimPointer {
+    fn screen(&mut self) -> mousepaint::Screen {
+        mousepaint::Screen { x: 0, y: 0, w: 1920, h: 1080 }
+    }
+    fn position(&mut self) -> Option<(i32, i32)> {
+        self.0 += 1;
+        let f = ((self.0 * mousepaint::POLL_MS) % 2_000) as f64 / 2_000.0;
+        Some(((f * 1919.0) as i32, (f * 1079.0) as i32))
+    }
+    fn color_at(&mut self, x: i32, _y: i32) -> Option<alienfx::Rgb> {
+        let palette = ["#FF9480", "#00E5FF", "#A040FF", "#FFFFFF"];
+        cockpit_core::lightctl::parse_rgb(palette[(x as usize * 4 / 1920).min(3)]).ok()
+    }
+}
+
+/// `cockpit lighting mouse`: mouse paint until Ctrl+C or `--seconds`, then the static colours back.
+/// `--dry-run`: a simulated sweep on a fake keyboard, and the report counts.
+#[allow(clippy::too_many_arguments)]
+fn lighting_mouse(ctx: &mut Ctx, seconds: Option<u64>, fps: u32, fade_ms: u64, dim: u32, look: &str, dry_run: bool) -> R {
+    let (base, brush) = mousepaint::look(look).ok_or_else(|| Fail::Refused(format!("'{look}' isn't a look: use glow, uncover, reveal, boost or screen")))?;
+    let mut l = Settings::load_from(&ctx.settings_path()).lighting;
+    let power = PowerState::default();
+    if dry_run {
+        l.mode = Mode::Custom;
+        l.keyboard.on = true;
+        if l.keyboard.brightness == 0 {
+            l.keyboard.brightness = 100;
+        }
+        let secs = seconds.unwrap_or(5).max(1);
+        let io = lightctl::FakeIo::default();
+        let sum = mousepaint::run(&mut io.clone(), &l, &power, Shown::of(&l, &power), None, base, brush, dim, fps, fade_ms, &mut SimClock::default(), &mut SimPointer(0), &mut |now| now >= secs * 1_000).map_err(Fail::Refused)?;
+        let text = format!("Dry run: nothing saved, nothing sent. {secs} simulated seconds of a diagonal sweep at up to {fps} writes a second: first picture {} reports, then {} writes, {} reports, {} key colours ({:.1} reports a second). Stopping writes the static colours back: {} reports.", sum.first, sum.frames, sum.reports, sum.keys, sum.reports as f64 / secs as f64, sum.restore.keyboard);
+        return ctx.emit(json!({ "dryRun": true, "summary": sum }), &text);
+    }
+    if !cfg!(windows) {
+        return Err(Fail::Refused("`cockpit lighting mouse` is Windows only: it reads the mouse pointer and the screen through Windows. `--dry-run` simulates it here.".into()));
+    }
+    ctx.lights_here()?;
+    mousepaint::eligible(&l, &power, fps, fade_ms, dim).map_err(|e| Fail::Refused(format!("{e} (`cockpit lighting mode custom` sets it up)")))?;
+    let mut io = ctx.light_io();
+    let pauser = io.pauser();
+    pauser.recover();
+    #[cfg(windows)]
+    let mut src: Box<dyn mousepaint::PointerSource> = Box::new(mousepaint::win::WinPointer::new());
+    #[cfg(not(windows))]
+    let mut src: Box<dyn mousepaint::PointerSource> = Box::new(SimPointer(0));
+    if !ctx.json {
+        let sc = src.screen();
+        let until = seconds.map_or("Ctrl+C stops it".to_string(), |s| format!("it stops after {s} s or on Ctrl+C"));
+        writeln!(ctx.out, "Mouse paint on: the screen ({} x {} pixels) is mapped onto the keyboard; look {look}, keys fade back over {:.1} s; {until} and the static colours come back.", sc.w, sc.h, fade_ms as f64 / 1_000.0)?;
+        ctx.out.flush()?;
+    }
+    ctx.clock.catch_stop();
+    let start = ctx.clock.now_ms();
+    let prev = shown_by(&l);
+    let sum = mousepaint::run(io.as_mut(), &l, &power, prev, l.pause_awcc.then_some(pauser.as_ref()), base, brush, dim, fps, fade_ms, &mut GlowClock(&mut *ctx.clock), src.as_mut(), &mut |now| seconds.is_some_and(|s| now.saturating_sub(start) >= s * 1_000)).map_err(Fail::Error)?;
+    let t = format!("Mouse paint stopped after {:.1} s: {} writes, {} key colours, {} reports after the first {}. The static colours are back: {}", sum.ran_ms as f64 / 1_000.0, sum.frames, sum.keys, sum.reports, sum.first, sum.restore.text());
+    ctx.emit(json!({ "summary": sum }), &t)
+}
+
+// ---------------------------------------------------------------- screen mirror
+
+/// A dry run's screen: a colour band sweeping left to right every 2 s.
+struct SimScreen(u64);
+
+impl screenmirror::ScreenSource for SimScreen {
+    fn size(&mut self) -> (i32, i32) {
+        (1920, 1080)
+    }
+    fn grab(&mut self) -> Option<screenmirror::Grab> {
+        use screenmirror::{GRAB_H, GRAB_W};
+        self.0 += 1;
+        let band = (self.0 as usize * 3) % GRAB_W;
+        let px = (0..GRAB_W * GRAB_H).map(|i| if (i % GRAB_W).abs_diff(band) < 6 { alienfx::Rgb::new(0, 229, 255) } else { alienfx::Rgb::new(10, 10, 30) }).collect();
+        Some(screenmirror::Grab { w: GRAB_W, h: GRAB_H, px })
+    }
+}
+
+/// `cockpit lighting screen`: the screen mirror until Ctrl+C or `--seconds`, then the static colours back.
+fn lighting_screen(ctx: &mut Ctx, seconds: Option<u64>, amb: screenmirror::Ambient, gpu: bool, dry_run: bool) -> R {
+    let fps = amb.fps;
+    let mut l = Settings::load_from(&ctx.settings_path()).lighting;
+    let power = PowerState::default();
+    if dry_run {
+        l.mode = Mode::Custom;
+        l.keyboard.on = true;
+        if l.keyboard.brightness == 0 {
+            l.keyboard.brightness = 100;
+        }
+        let secs = seconds.unwrap_or(5).max(1);
+        let io = lightctl::FakeIo::default();
+        let sum = screenmirror::run(&mut io.clone(), &l, &power, Shown::of(&l, &power), None, &amb, &mut SimClock::default(), &mut SimScreen(0), &mut |now| now >= secs * 1_000).map_err(Fail::Refused)?;
+        let text = format!("Dry run: nothing saved, nothing sent. {secs} simulated seconds of a moving colour band at up to {fps} writes a second: first picture {} reports, then {} writes, {} reports, {} key colours ({:.1} reports a second). Stopping writes the static colours back: {} reports.", sum.first, sum.frames, sum.reports, sum.keys, sum.reports as f64 / secs as f64, sum.restore.keyboard);
+        return ctx.emit(json!({ "dryRun": true, "summary": sum }), &text);
+    }
+    if !cfg!(windows) {
+        return Err(Fail::Refused("`cockpit lighting screen` is Windows only: it reads the screen through Windows. `--dry-run` simulates it here.".into()));
+    }
+    ctx.lights_here()?;
+    screenmirror::eligible(&l, &power, &amb).map_err(|e| Fail::Refused(format!("{e} (`cockpit lighting mode custom` sets it up)")))?;
+    let mut io = ctx.light_io();
+    let pauser = io.pauser();
+    pauser.recover();
+    #[cfg(windows)]
+    let mut src: Box<dyn screenmirror::ScreenSource> = screenmirror::open(gpu).map_err(Fail::Error)?;
+    #[cfg(not(windows))]
+    let mut src: Box<dyn screenmirror::ScreenSource> = {
+        let _ = gpu;
+        Box::new(SimScreen(0))
+    };
+    if !ctx.json {
+        let (w, h) = src.size();
+        let until = seconds.map_or("Ctrl+C stops it".to_string(), |s| format!("it stops after {s} s or on Ctrl+C"));
+        let how = src.kind();
+        writeln!(ctx.out, "Screen mirror on: the screen ({w} x {h} pixels, read by {how}) glows on the keyboard as one gradient, up to {fps} updates a second, spread {}, ease {} ms, saturation x{}; {until} and the static colours come back.", amb.spread, amb.smooth_ms, amb.saturation)?;
+        ctx.out.flush()?;
+    }
+    ctx.clock.catch_stop();
+    let start = ctx.clock.now_ms();
+    let prev = shown_by(&l);
+    let sum = screenmirror::run(io.as_mut(), &l, &power, prev, l.pause_awcc.then_some(pauser.as_ref()), &amb, &mut GlowClock(&mut *ctx.clock), src.as_mut(), &mut |now| seconds.is_some_and(|s| now.saturating_sub(start) >= s * 1_000)).map_err(Fail::Error)?;
+    let t = format!("Screen mirror stopped after {:.1} s: {} screen reads (slowest {} ms), {} writes, {} key colours, {} reports after the first {}. The static colours are back: {}", sum.ran_ms as f64 / 1_000.0, sum.grabs, sum.max_grab_ms, sum.frames, sum.keys, sum.reports, sum.first, sum.restore.text());
+    ctx.emit(json!({ "summary": sum }), &t)
 }
 
 // ---------------------------------------------------------------- the log, settings, the boost key

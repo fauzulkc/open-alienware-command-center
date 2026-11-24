@@ -1,6 +1,6 @@
 // The screens' decisions, kept out of the components so they can be tested on their own (logic.test.ts).
 
-import { hex, sensorName, type Alert, type Fan, type Snapshot, type Status } from './api';
+import { hex, sensorName, type Alert, type Fan, type KeyboardLight, type KeyEffect, type KeyInfo, type LightingSettings, type ReactiveSettings, type Rgb, type Snapshot, type Status } from './api';
 
 /** Above this a sensor counts as hot for the fan checks (the reader's fan rules use the same 80 °C). */
 export const HOT_C = 80;
@@ -102,4 +102,233 @@ export function stuckFans(history: { fans: (number | null)[] }[], fans: Fan[], w
       return v.length > 0 && Math.max(...v) - Math.min(...v) >= 300;
     });
   }).map((f) => f.id);
+}
+
+// ---------------------------------------------------------------- keyboard lighting (docs/lighting-control.md)
+
+const HEX_RE = /^#[0-9A-Fa-f]{6}$/;
+
+/** A colour as the backend takes it: "#RRGGBB", nothing else. */
+export function isHex(s: unknown): s is Rgb {
+  return typeof s === 'string' && HEX_RE.test(s);
+}
+
+/** What someone typed, as "#RRGGBB" in capitals, or null: takes "ff00aa" and "#ff00aa", refuses "#f0a" and words. */
+export function normHex(s: string): Rgb | null {
+  const t = s.trim();
+  const h = t.startsWith('#') ? t : `#${t}`;
+  return isHex(h) ? h.toUpperCase() : null;
+}
+
+/** AWCC's four groups by LED id. A key can be in two (W is in QWER and in WASD), which `KeyInfo.group` can't say,
+ * so the group buttons also take these members when the layout has those keys. */
+export const AWCC_GROUP_KEYS: Record<string, number[]> = {
+  'Function Keys': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+  Numbers: [21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
+  QWER: [42, 43, 44, 45],
+  WASD: [43, 62, 63, 64],
+};
+
+/** The keys a group button selects, in layout order. */
+export function groupMembers(layout: KeyInfo[], name: string): number[] {
+  const extra = AWCC_GROUP_KEYS[name] ?? [];
+  return layout.filter((k) => k.group === name || extra.includes(k.id)).map((k) => k.id);
+}
+
+/** A key's colour: its own, else its group's, else the keyboard's base colour. */
+export function composeKey(k: KeyInfo, kb: Pick<KeyboardLight, 'color' | 'groups' | 'keys'>): Rgb {
+  return kb.keys[k.id] ?? (k.group != null ? kb.groups[k.group] : undefined) ?? kb.color;
+}
+
+/** A colour at a share of full brightness (0–100), as the eye sees a dimmed LED: each channel scaled. */
+export function dimHex(c: Rgb, pct: number): Rgb {
+  const f = Math.min(100, Math.max(0, pct)) / 100;
+  const ch = (i: number) => Math.round(parseInt(c.slice(i, i + 2), 16) * f).toString(16).padStart(2, '0');
+  return `#${ch(1)}${ch(3)}${ch(5)}`.toUpperCase();
+}
+
+/** What each key shows on the map: composed and dimmed by brightness; dark when off; with a hardware effect
+ * every key shows the effect's colour, since the effect overrides per-key colours. */
+export function shownColors(layout: KeyInfo[], kb: KeyboardLight): Record<number, Rgb> {
+  const level = kb.on ? kb.brightness : 0;
+  const out: Record<number, Rgb> = {};
+  for (const k of layout) out[k.id] = dimHex(kb.effect === 'static' ? composeKey(k, kb) : kb.color, level);
+  return out;
+}
+
+/** Whether a label on this fill reads better dark or light (WCAG relative luminance). */
+export function inkOn(c: Rgb): 'dark' | 'light' {
+  const lin = (i: number) => { const v = parseInt(c.slice(i, i + 2), 16) / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * lin(1) + 0.7152 * lin(3) + 0.0722 * lin(5) > 0.33 ? 'dark' : 'light';
+}
+
+/** The key under a point given in key units (x = columns, y = rows). */
+export function keyAt(layout: KeyInfo[], x: number, y: number): number | null {
+  return layout.find((k) => y >= k.row && y < k.row + 1 && x >= k.col && x < k.col + k.width)?.id ?? null;
+}
+
+/** The keys a drag rectangle touches, corners in key units, either order. */
+export function keysInRect(layout: KeyInfo[], a: { x: number; y: number }, b: { x: number; y: number }): number[] {
+  const [x0, x1] = [Math.min(a.x, b.x), Math.max(a.x, b.x)];
+  const [y0, y1] = [Math.min(a.y, b.y), Math.max(a.y, b.y)];
+  return layout.filter((k) => k.col < x1 && k.col + k.width > x0 && k.row < y1 && k.row + 1 > y0).map((k) => k.id);
+}
+
+/** The keys a brush stroke crosses from `a` to `b` (key units), in order: pointer events come far apart on a
+ * fast drag, so the segment is walked in small steps instead of taking only its ends. */
+export function keysAlong(layout: KeyInfo[], a: { x: number; y: number }, b: { x: number; y: number }, step = 0.2): number[] {
+  const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / step));
+  const out: number[] = [];
+  for (let i = 0; i <= n; i++) {
+    const id = keyAt(layout, a.x + ((b.x - a.x) * i) / n, a.y + ((b.y - a.y) * i) / n);
+    if (id != null && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** Shift/Ctrl-click: a key in the selection leaves it, any other joins it. */
+export function toggleKey(sel: number[], id: number): number[] {
+  return sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id];
+}
+
+/** Both lists, without repeats, in order. */
+export function unionKeys<T>(a: T[], b: T[]): T[] {
+  return [...new Set([...a, ...b])];
+}
+
+/** The colour the selection's editor starts from: the first selected key's; null for none. */
+export function selectionColor(layout: KeyInfo[], kb: KeyboardLight, sel: number[]): Rgb | null {
+  const cs = sel.map((id) => layout.find((k) => k.id === id)).filter((k): k is KeyInfo => !!k).map((k) => composeKey(k, kb));
+  return cs[0] ?? null;
+}
+
+/** The keyboard's effects, worded plainly; which settings each one uses. */
+export const EFFECTS: { id: KeyEffect; name: string; what: string; tempo: boolean; color2: boolean }[] = [
+  { id: 'static', name: 'Static', what: 'Each key keeps its own colour.', tempo: false, color2: false },
+  { id: 'breathing', name: 'Breathing', what: 'The colour slowly fades out and back in.', tempo: true, color2: false },
+  { id: 'wave', name: 'Wave', what: 'The colour sweeps across the keyboard.', tempo: true, color2: false },
+  { id: 'dualWave', name: 'Two-colour wave', what: 'Two colours sweep across the keyboard in turn.', tempo: true, color2: true },
+  { id: 'pulse', name: 'Pulse', what: 'The colour flashes on and off.', tempo: true, color2: false },
+  { id: 'mixPulse', name: 'Two-colour pulse', what: 'The keys flash between two colours.', tempo: true, color2: true },
+  { id: 'nightRider', name: 'Back and forth', what: 'A band of light runs from side to side.', tempo: true, color2: false },
+  { id: 'laser', name: 'Laser', what: 'A line of light runs across the keys.', tempo: true, color2: false },
+];
+export const effectInfo = (e: KeyEffect) => EFFECTS.find((x) => x.id === e) ?? EFFECTS[0];
+
+/** The reactive glow's defaults, as the backend has them: off, 18 fps, a 0.7 s fade, the owner's peach and
+ * coral. */
+export const REACTIVE_DEFAULTS: ReactiveSettings = { on: false, fps: 18, decayMs: 700, spread: 0.35, drift: 0.12, warm: '#FF9480', peak: '#FF6F61' };
+export const reactiveOf = (s: LightingSettings): ReactiveSettings => ({ ...REACTIVE_DEFAULTS, ...s.reactive });
+
+/** A scheduler for writes: `schedule` keeps only the newest value and runs `fn` once things have been quiet for
+ * `ms` (or, with `maxWait`, at least that often while they keep changing); `flush` runs it now (on release);
+ * `cancel` drops it. */
+export function debounce<T>(fn: (v: T) => void, ms: number, maxWait?: number) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let first: number | null = null;
+  let value: { v: T } | null = null;
+  const run = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    first = null;
+    const v = value;
+    value = null;
+    if (v) fn(v.v);
+  };
+  return {
+    schedule(v: T) {
+      value = { v };
+      const now = Date.now();
+      if (first == null) first = now;
+      if (timer) clearTimeout(timer);
+      const wait = maxWait != null ? Math.max(0, Math.min(ms, first + maxWait - now)) : ms;
+      timer = setTimeout(run, wait);
+    },
+    flush: run,
+    cancel() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      first = null;
+      value = null;
+    },
+    get pending() {
+      return value != null;
+    },
+  };
+}
+
+/** The colour most keys have (the first one wins a tie), or null for none. */
+export function mostCommon(colors: Rgb[]): Rgb | null {
+  const n = new Map<Rgb, number>();
+  let best: Rgb | null = null;
+  for (const c of colors) {
+    n.set(c, (n.get(c) ?? 0) + 1);
+    if (best == null || n.get(c)! > n.get(best)!) best = c;
+  }
+  return best;
+}
+
+/** Custom settings seeded from AWCC's look, per key: the commonest colour becomes the base and only the keys that
+ * differ keep their own, so the map looks exactly like AWCC's. Groups are cleared (they would sit between) and
+ * the effect goes to Static; on/off, brightness, zones and the power rules stay as they were. */
+export function importAwcc(s: LightingSettings, awcc: { keys: Record<number, Rgb> }, layout: KeyInfo[]): LightingSettings {
+  const of = (id: number) => { const c = awcc.keys[id]; return typeof c === 'string' ? normHex(c) : null; };
+  const base = mostCommon(layout.map((k) => of(k.id)).filter((c): c is Rgb => c != null)) ?? s.keyboard.color;
+  const keys: Record<number, Rgb> = {};
+  for (const k of layout) {
+    const c = of(k.id);
+    if (c && c !== base) keys[k.id] = c;
+  }
+  return { ...s, keyboard: { ...s.keyboard, effect: 'static', color: base, groups: {}, keys } };
+}
+
+/** The colour palette next to the picker: the colours of AWCC's look, most used first, then common ones; 12. */
+export function palette(awcc: Record<number, Rgb> | null | undefined, size = 12): Rgb[] {
+  const fill = ['#FFFFFF', '#FF0000', '#FF8000', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#8000FF', '#FF00FF', '#FF0080', '#80FF00', '#0080FF'];
+  const n = new Map<Rgb, number>();
+  for (const c of Object.values(awcc ?? {})) { const h = normHex(c); if (h) n.set(h, (n.get(h) ?? 0) + 1); }
+  const fromAwcc = [...n.entries()].sort((a, b) => b[1] - a[1]).map(([c]) => c);
+  return unionKeys(fromAwcc, fill).slice(0, size);
+}
+
+/** The same checks the backend makes, in words, or null when the settings are fine. */
+export function lightingProblem(s: LightingSettings, layout: KeyInfo[], groups: string[]): string | null {
+  const kb = s.keyboard;
+  if (s.mode !== 'awcc' && s.mode !== 'custom') return `Unknown mode "${s.mode}".`;
+  if (!Number.isFinite(kb.brightness) || kb.brightness < 0 || kb.brightness > 100) return `Brightness must be 0 to 100, not ${kb.brightness}.`;
+  if (!Number.isInteger(kb.tempo) || kb.tempo < 0 || kb.tempo > 255) return `Tempo must be 0 to 255, not ${kb.tempo}.`;
+  if (!EFFECTS.some((e) => e.id === kb.effect)) return `Unknown effect "${kb.effect}".`;
+  for (const [what, c] of [['base colour', kb.color], ['second colour', kb.color2]] as const) if (!isHex(c)) return `The ${what} "${c}" is not a #RRGGBB colour.`;
+  for (const [g, c] of Object.entries(kb.groups)) {
+    if (!groups.includes(g)) return `Unknown key group "${g}".`;
+    if (!isHex(c)) return `The colour for ${g} "${c}" is not a #RRGGBB colour.`;
+  }
+  const ids = new Set(layout.map((k) => k.id));
+  for (const [id, c] of Object.entries(kb.keys)) {
+    if (!ids.has(Number(id))) return `No key with id ${id} on this keyboard.`;
+    if (!isHex(c)) return `The colour for key ${id} "${c}" is not a #RRGGBB colour.`;
+  }
+  for (const [id, c] of Object.entries(s.zones)) {
+    const n = Number(id);
+    if (!Number.isInteger(n) || n < 0 || n > 19) return `Zone light ids are 0 to 19, not ${id}.`;
+    if (!isHex(c)) return `The colour for light ${id} "${c}" is not a #RRGGBB colour.`;
+  }
+  if (s.reactive) {
+    const r = reactiveOf(s);
+    if (!Number.isInteger(r.fps) || r.fps < 5 || r.fps > 30) return `The reactive glow runs at 5 to 30 frames a second, not ${r.fps}.`;
+    if (!Number.isInteger(r.decayMs) || r.decayMs < 200 || r.decayMs > 3000) return `The glow's fade must be 200 to 3000 ms, not ${r.decayMs}.`;
+    if (!(r.spread >= 0 && r.spread <= 1)) return `The glow's spread must be 0 to 1, not ${r.spread}.`;
+    if (!(r.drift >= 0 && r.drift <= 0.5)) return `The glow's drift must be 0 to 0.5, not ${r.drift}.`;
+    for (const [what, c] of [['warm colour', r.warm], ['peak colour', r.peak]] as const) if (!isHex(c)) return `The glow's ${what} "${c}" is not a #RRGGBB colour.`;
+  }
+  return null;
+}
+
+/** Names for the zone controller's lights (docs/lighting-and-macros-parity.md). */
+export function zoneLabel(id: number): string {
+  if (id === 0) return 'Power button';
+  if (id === 1) return 'Alien head';
+  if (id >= 10 && id <= 14) return `Left ${id - 9}`;
+  if (id >= 15 && id <= 19) return `Right ${id - 14}`;
+  return `Light ${id}`;
 }

@@ -127,7 +127,20 @@ pub fn request(name: &str, req: &Request, server_image: &str) -> Result<Response
 /// [`request`] with the server check spelled out.
 pub fn request_checked(name: &str, req: &Request, check: &ServerCheck) -> Result<Response> {
     let w = wide(name);
-    let h = unsafe { CreateFileW(PCWSTR(w.as_ptr()), GENERIC_READ.0 | GENERIC_WRITE.0, FILE_SHARE_MODE(0), None, OPEN_EXISTING, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, None) }.with_context(|| format!("connecting to {name} (is the Wiregent hardware service running?)"))?;
+    let open = || unsafe { CreateFileW(PCWSTR(w.as_ptr()), GENERIC_READ.0 | GENERIC_WRITE.0, FILE_SHARE_MODE(0), None, OPEN_EXISTING, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, None) };
+    // Every pipe instance can be briefly busy (the server is still finishing the last client): wait for one,
+    // as Windows documents for named-pipe clients, then retry. A few tries, at most ~2 s in all.
+    let mut h = open();
+    for _ in 0..4 {
+        match &h {
+            Err(e) if e.code() == windows::Win32::Foundation::ERROR_PIPE_BUSY.to_hresult() => {
+                let _ = unsafe { windows::Win32::System::Pipes::WaitNamedPipeW(PCWSTR(w.as_ptr()), 500) };
+                h = open();
+            }
+            _ => break,
+        }
+    }
+    let h = h.with_context(|| format!("connecting to {name} (is the Wiregent hardware service running?)"))?;
     let mut spid = 0u32;
     let server = unsafe { GetNamedPipeServerProcessId(h, &mut spid) }.map_err(anyhow::Error::from).and_then(|_| process_identity(spid));
     // From here the handle is owned by the File, which closes it.

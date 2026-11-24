@@ -1,0 +1,196 @@
+{
+  "name": "Heat map (Dota 2 + Warframe + AI engineer)",
+  "about": "Colour by how often each key is pressed: estimated from English letter frequency, coding, and the owner's Dota (QWER abilities, ASD ZXC items, ` TP) and Warframe use. Five steps, all colours matched by eye on the owner's keys: peach (hottest), hot purple, pink-violet, purple, royal blue (rare). Awareness keys keep their colours: red risk, coral toggles, pink sound, royal-blue Windows and rarely used system keys, Tab off. Bottom row dimmed.",
+  "base": "#FFFFFF",
+  "ledBalance": {
+    "r": 50,
+    "g": 60,
+    "b": 100
+  },
+  "ledPalette": {
+    "#FF9480": "#FF5030",
+    "#A040FF": "#8400D0",
+    "#7830BF": "#63009C",
+    "#481D73": "#3B005E",
+    "#C86BFF": "#7800FF",
+    "#5A3073": "#360073",
+    "#9F7BFF": "#5808FF",
+    "#1A245E": "#070056",
+    "#FF3DB4": "#A000F0",
+    "#E07BFF": "#8000E0",
+    "#FF6F61": "#F83430",
+    "#FF1E3C": "#FF000C",
+    "#3A4FD0": "#1000C0",
+    "#000000": "#000000"
+  },
+  "roles": [
+    {
+      "role": "Hottest",
+      "color": "#FF9480",
+      "keys": {
+        "E": 44,
+        "T": 46,
+        "A": 62,
+        "O": 50,
+        "I": 49,
+        "N": 88,
+        "S": 63,
+        "H": 67,
+        "R": 45,
+        "Q": 42,
+        "W": 43,
+        "D": 64,
+        "F": 65
+      }
+    },
+    {
+      "role": "Hot",
+      "color": "#A040FF",
+      "keys": {
+        "`": 20,
+        "Z": 83,
+        "X": 84,
+        "C": 85,
+        "Enter": 74,
+        "Left Shift": 81,
+        "L": 70,
+        "U": 48
+      }
+    },
+    {
+      "role": "Hot (bottom row, 75 %)",
+      "color": "#7830BF",
+      "keys": {
+        "Right Ctrl": 112,
+        "Up / Page Up": 114,
+        "Left": 133,
+        "Down / Page Down": 134,
+        "Right": 135
+      }
+    },
+    {
+      "role": "Hot (bottom row, 45 %)",
+      "color": "#481D73",
+      "keys": {
+        "Left Ctrl": 100
+      }
+    },
+    {
+      "role": "Warm",
+      "color": "#C86BFF",
+      "keys": {
+        "M": 89,
+        "G": 66,
+        "Y": 47,
+        "P": 51,
+        "B": 87,
+        "1": 21,
+        "2": 22,
+        "3": 23,
+        "4": 24,
+        ",": 90,
+        ".": 91,
+        "/": 92,
+        ";": 71,
+        "Right Shift": 94,
+        "F10": 10,
+        "F11": 11
+      }
+    },
+    {
+      "role": "Warm (bottom row, 45 %)",
+      "color": "#5A3073",
+      "keys": {
+        "Fn": 101,
+        "Left Alt": 104
+      }
+    },
+    {
+      "role": "Cool",
+      "color": "#9F7BFF",
+      "keys": {
+        "V": 86,
+        "K": 69,
+        "J": 68,
+        "5": 25,
+        "6": 26,
+        "7": 27,
+        "8": 28,
+        "9": 29,
+        "0": 30,
+        "'": 72,
+        "-": 31,
+        "=": 32,
+        "[": 52,
+        "]": 53,
+        "\\": 55,
+        "F7": 7
+      }
+    },
+    {
+      "role": "Rare (bottom row, 45 %)",
+      "color": "#1A245E",
+      "keys": {
+        "Right Alt": 111
+      }
+    },
+    {
+      "role": "Mute (used actively): hot pink",
+      "color": "#FF3DB4",
+      "keys": {
+        "Speaker Mute": 16
+      }
+    },
+    {
+      "role": "Volume: pink",
+      "color": "#E07BFF",
+      "keys": {
+        "Volume Up": 18,
+        "Volume Down": 17
+      }
+    },
+    {
+      "role": "Mode toggles: boost (F1), Caps Lock: living coral",
+      "color": "#FF6F61",
+      "keys": {
+        "F1": 1,
+        "Caps Lock": 61
+      }
+    },
+    {
+      "role": "Risk: cancel, delete, privacy: red",
+      "color": "#FF1E3C",
+      "keys": {
+        "Esc": 0,
+        "Backspace": 35,
+        "Delete": 15,
+        "Microphone Mute": 19
+      }
+    },
+    {
+      "role": "Rarely used system keys and the Windows keys (Win+Alt+B for HDR; leaves a game): dim royal blue, the least distracting",
+      "color": "#3A4FD0",
+      "keys": {
+        "F2": 2,
+        "F3": 3,
+        "F4": 4,
+        "F5": 5,
+        "F6": 6,
+        "F8": 8,
+        "F9": 9,
+        "F12": 12,
+        "Home / PrtScn": 13,
+        "End / Pause": 14,
+        "Left Windows": 103,
+        "Windows lock": 109
+      }
+    },
+    {
+      "role": "Broken key: dark, reach for Right Ctrl",
+      "color": "#000000",
+      "keys": {
+        "Tab": 40
+      }
+    }
+  ]
+}

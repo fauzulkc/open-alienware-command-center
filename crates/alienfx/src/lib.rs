@@ -7,20 +7,25 @@
 //! Pure builders for the AlienFX lighting protocol, API v4 (zone controller, 34-byte output reports) and API
 //! v5 (per-key keyboard, 64-byte feature report 0xCC).
 //!
-//! Nothing in this crate writes to a device. Builders return fixed-size [`Report`]s (a report can never be
+//! The builders write to no device. They return fixed-size [`Report`]s (a report can never be
 //! longer than its device's report length) or [`Step`] sequences; [`allowed`] re-checks any byte slice
 //! against the set of reports this crate can produce, so a writer added later can gate every send on it.
 //!
 //! The Windows-only [`probe`] module enumerates HID interfaces and reads attributes and capabilities through a
-//! query-only handle. It is the only module that uses `unsafe`; every other module is `#![forbid(unsafe_code)]`.
+//! query-only handle. [`device`] sends reports: every one passes [`allowed`] and is refused if it is an
+//! [`is_memory_write`]; its Windows parts are the only other `unsafe` code. [`x17`] is the x17 R2 keyboard's
+//! 91 keys and AWCC's groups. Every other module is `#![forbid(unsafe_code)]`.
 
 #![deny(unsafe_code)]
 
 pub mod allow;
 pub mod detect;
+#[allow(unsafe_code)]
+pub mod device;
 pub mod report;
 pub mod v4;
 pub mod v5;
+pub mod x17;
 
 #[cfg(windows)]
 #[allow(unsafe_code)]

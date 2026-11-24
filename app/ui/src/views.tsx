@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, hex, PROFILE_NAMES, sensorName, type BoostChange, type Controls, type Drift, type Fan, type Health, type LightDevice, type LogDay, type ModeChange, type Point, type Proc, type Settings, type Status } from './api';
+import { api, hex, PROFILE_NAMES, sensorName, type BoostChange, type Controls, type Drift, type Fan, type Health, type LogDay, type ModeChange, type Point, type Proc, type Settings, type Status } from './api';
 import { Chart, CurveEditor, FanRotor, Gauge, LoadChart, LockedWhy, ModeDock, Section, Tip, type LoadSeries } from './components';
 import { Duty, FanResponse, SpeedAndTemp } from './fangraphs';
 import { alertText, fanFlag, stuckFans, verdict, zoneName } from './logic';
@@ -273,37 +273,8 @@ export function History() {
   );
 }
 
-// ---------------------------------------------------------------- Lighting
-export function Lighting({ controls }: { controls: Controls | null }) {
-  const [data, setData] = useState<{ devices: LightDevice[]; error?: string } | null>(null);
-  useEffect(() => { api.lighting().then(setData); }, []);
-  const kb = data?.devices.find((d) => d.device.includes('Mechanical'));
-  const zones = data?.devices.find((d) => !d.device.includes('Mechanical'));
-  const total = kb?.groups.reduce((n, g) => n + g.leds.length, 0) ?? 0;
-  return (
-    <div className="cockpit">
-      <Section title="Keyboard · from AWCC" className="span3">
-        {data?.error && <p className="muted">Couldn't read AWCC's lighting: {data.error}</p>}
-        {kb && (
-          <>
-            <div className="glow-strip">{kb.groups.map((g, i) => <Tip key={i} text={`${g.leds.length} key(s) in ${g.colors[0]} at ${g.brightness}% brightness`}><i style={{ flex: g.leds.length, background: g.colors[0] }} /></Tip>)}</div>
-            <p className="muted small">{kb.groups.length} colour groups across {total} keys, preset "{kb.preset}". The keyboard keeps these on its own.</p>
-          </>
-        )}
-      </Section>
-      {zones && (
-        <Section title="Zones · power states" className="span3">
-          <div className="row">{zones.power_states.map((p) => <span key={p} className="chip">{p}</span>)}</div>
-          <p className="muted small">The zone lights change by themselves with power state (charging, on battery, asleep).</p>
-        </Section>
-      )}
-      <Section title="Edit lighting" className="span3">
-        <div className="row">{['Static', 'Breathing', 'Spectrum', 'Per key', 'Battery and sleep'].map((x) => <button key={x} className="chip" disabled>{x}</button>)}</div>
-        <LockedWhy reasons={controls?.lighting.reasons ?? []} />
-      </Section>
-    </div>
-  );
-}
+// ---------------------------------------------------------------- Lighting (lighting.tsx)
+export { Lighting } from './lighting';
 
 // ---------------------------------------------------------------- Health (incl. Dell services)
 export function HealthView() {
