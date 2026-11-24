@@ -8,6 +8,7 @@ mod autostart;
 mod boostkey;
 mod elevate;
 mod glow;
+mod live;
 mod lights;
 mod processes;
 mod source;
@@ -618,6 +619,11 @@ pub fn run() {
                     let (light, keys) = (app.state::<App>().light.clone(), glow_keys.clone());
                     std::thread::spawn(move || glow::run(light, keys, rx, move || handle.state::<App>().settings.lock().unwrap().lighting.clone()));
                 }
+                // The live animation (clock, mouse paint, screen mirror): its own thread, handed off around
+                // every other lighting write.
+                let handle = app.handle().clone();
+                let light = app.state::<App>().light.clone();
+                std::thread::spawn(move || live::run(light, move || handle.state::<App>().settings.lock().unwrap().lighting.clone()));
             }
             // Lighting: find the keyboard (read-only probe), and in custom mode put the person's look back on
             // it (AWCC sets its own at sign-in).
@@ -695,8 +701,8 @@ pub fn run() {
                 let modes = &app.state::<App>().modes;
                 reset_boost(modes);
                 forget_raised(modes);
-                // The reactive glow stops with the static colours written back; AWCC's lighting programs resume
-                // now if a lighting write still holds them.
+                // The live animation and the reactive glow stop with the static colours written back; AWCC's
+                // lighting programs resume now if a lighting write still holds them.
                 lights::quit(&app.state::<App>().light);
             }
             _ => {}

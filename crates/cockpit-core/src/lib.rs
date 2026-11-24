@@ -20,6 +20,7 @@ pub mod games;
 pub mod keyinput;
 pub mod lightctl;
 pub mod lighting;
+pub mod live;
 pub mod mousepaint;
 pub mod log;
 pub mod modes;

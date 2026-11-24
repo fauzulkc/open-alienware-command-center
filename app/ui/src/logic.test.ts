@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_AWCC_KEYS, DEMO_LAYOUT, type Fan, type KeyboardLight, type KeyInfo, type LightingSettings, type ReactiveSettings, type Snapshot, type Status } from './api';
 import {
-  alertText, BLADES, composeKey, REACTIVE_DEFAULTS, reactiveOf, debounce, dimHex, drawnRevPerSec, EFFECTS, fanFlag, groupMembers, importAwcc, inkOn, isHex, keyAt, keysAlong, keysInRect, lightingProblem,
+  alertText, BLADES, composeKey, LIVE_DEFAULTS, LIVE_KINDS, liveOf, MOUSE_LOOKS, REACTIVE_DEFAULTS, reactiveOf, debounce, dimHex, drawnRevPerSec, EFFECTS, fanFlag, groupMembers, importAwcc, inkOn, isHex, keyAt, keysAlong, keysInRect, lightingProblem,
   MAX_DRAWN_REV_PER_S, MAX_FRAME_S, mergeHistory, mostCommon, normHex, palette, rotorPercent, shownColors, stoppedZones, stuckFans, toggleKey, verdict, zoneName,
 } from './logic';
 
@@ -321,6 +321,21 @@ describe('the backend’s checks, mirrored', () => {
     expect(lightingProblem(rx({ warm: 'peach' }), tiny, GROUPS)).toMatch(/warm colour/);
     expect(reactiveOf(lightSettings())).toEqual(REACTIVE_DEFAULTS);
     expect(REACTIVE_DEFAULTS).toMatchObject({ on: false, fps: 18, decayMs: 700, warm: '#FF9480' });
+  });
+  it('checks the live animation like the backend, and older settings without it pass', () => {
+    const lv = (over: Partial<typeof LIVE_DEFAULTS>) => lightSettings({ live: { ...LIVE_DEFAULTS, ...over } });
+    expect(liveOf(lightSettings())).toEqual(LIVE_DEFAULTS);
+    expect(LIVE_DEFAULTS).toMatchObject({ kind: 'off', look: 'glow', fadeMs: 2000, dim: 70, spread: 1, saturation: 2, gpu: true });
+    expect(lightingProblem(lv({ kind: 'screen' }), tiny, GROUPS)).toBeNull();
+    expect(lightingProblem(lv({ kind: 'sparkle' as never }), tiny, GROUPS)).toMatch(/live animation/);
+    expect(lightingProblem(lv({ look: 'neon' as never }), tiny, GROUPS)).toMatch(/look/);
+    expect(lightingProblem(lv({ fadeMs: 20000 }), tiny, GROUPS)).toMatch(/fade/);
+    expect(lightingProblem(lv({ dim: 0 }), tiny, GROUPS)).toMatch(/1 to 100 %/);
+    expect(lightingProblem(lv({ screenFps: 31 }), tiny, GROUPS)).toMatch(/1 to 30 times/);
+    expect(lightingProblem(lv({ spread: 1.2 }), tiny, GROUPS)).toMatch(/variety/);
+    expect(lightingProblem(lv({ saturation: 0.5 }), tiny, GROUPS)).toMatch(/colour depth/);
+    expect(LIVE_KINDS.map((k) => k.id)).toEqual(['off', 'clock', 'mouse', 'screen']);
+    expect(MOUSE_LOOKS.map((k) => k.id)).toEqual(['glow', 'uncover', 'reveal', 'boost', 'screen']);
   });
   it('words every effect, and only the two-colour ones use the second colour', () => {
     expect(EFFECTS.map((e) => e.id)).toEqual(['static', 'breathing', 'wave', 'dualWave', 'pulse', 'mixPulse', 'nightRider', 'laser']);

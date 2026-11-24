@@ -67,6 +67,30 @@ export interface ReactiveSettings {
   /** the hint at a press's peak (intended) */
   peak: Rgb;
 }
+/** A PC-driven animation the app keeps running (`lighting.live`). */
+export type LiveKind = 'off' | 'clock' | 'mouse' | 'screen';
+export type MouseLook = 'glow' | 'uncover' | 'reveal' | 'boost' | 'screen';
+export interface LiveSettings {
+  kind: LiveKind;
+  /** mouse paint's look */
+  look: MouseLook;
+  /** mouse paint: a key fades back over this, 0..10000 ms (0 keeps the paint) */
+  fadeMs: number;
+  /** mouse paint, boost: the dimmed keys' brightness, 1..100 % */
+  dim: number;
+  /** mouse paint: writes a second, 1..30 */
+  mouseFps: number;
+  /** screen mirror: writes a second, 1..30 */
+  screenFps: number;
+  /** screen mirror: the ease's time constant, 0..10000 ms */
+  smoothMs: number;
+  /** screen mirror: how much the screen's areas keep their own colours, 0..1 */
+  spread: number;
+  /** screen mirror: colour depth, 1..4 */
+  saturation: number;
+  /** screen mirror: read the screen on the graphics card (else through GDI) */
+  gpu: boolean;
+}
 export interface LightingSettings {
   /** 'awcc': the app never writes (AWCC's look stays) */
   mode: 'awcc' | 'custom';
@@ -84,6 +108,8 @@ export interface LightingSettings {
   ledPalette?: Record<string, string>;
   /** The reactive glow (missing in older settings: off). */
   reactive?: ReactiveSettings;
+  /** The live animation (missing in older settings: off). */
+  live?: LiveSettings;
 }
 export interface KeyInfo { id: number; name: string; row: number; col: number; width: number; group?: string; present?: boolean }
 export interface LightingStatus {

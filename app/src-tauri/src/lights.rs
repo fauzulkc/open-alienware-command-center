@@ -10,11 +10,15 @@
 //! The reactive glow's runner lives here too ([`Runtime::glow`], driven by `glow.rs`), so its frames and the
 //! app's other writes never interleave: a settings write carries the glow on from the new static colours
 //! ([`Glow::Resync`]) or ends it, and AWCC's look written back ends it.
+//!
+//! The live animation (`live.rs`: the clock, mouse paint, the screen mirror) runs on its own thread with its
+//! own writes. Every write here first takes a hold on it ([`LIVE`]): it stops with the static colours written
+//! back before the write, and starts again once nothing holds it.
 
 use cockpit_core::lightctl::{self, LastApply, LightIo, LightingSettings, LightingStatus, Mode, PauseLease, PowerState, Shown, SystemIo};
 use cockpit_core::reactive::{self, Runner};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -67,6 +71,66 @@ pub enum Glow<'a> {
 
 pub type Shared = Arc<Mutex<Runtime>>;
 
+/// The live animation's hand-off with the app's other writes. Never wait on it while holding the lighting
+/// lock: the live thread takes that lock as it finishes.
+pub struct LiveGate {
+    /// Set by a hold: the running animation stops (it checks every poll).
+    stop: AtomicBool,
+    /// An animation is running (its writes may be in flight).
+    running: AtomicBool,
+    /// Writes waiting or in progress: no animation starts while any.
+    holds: AtomicUsize,
+}
+
+pub static LIVE: LiveGate = LiveGate { stop: AtomicBool::new(false), running: AtomicBool::new(false), holds: AtomicUsize::new(0) };
+
+/// How long a hold waits for a running animation to stop and put the static colours back.
+const HOLD_WAIT: Duration = Duration::from_secs(5);
+
+/// A write's hold on the live animation; released when dropped.
+pub struct LiveHold;
+
+impl Drop for LiveHold {
+    fn drop(&mut self) {
+        LIVE.holds.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl LiveGate {
+    /// Stops a running animation and keeps it from starting until the hold is dropped. Waits (up to 5 s) for
+    /// it to finish its write-back.
+    pub fn hold(&'static self) -> LiveHold {
+        self.holds.fetch_add(1, Ordering::SeqCst);
+        self.stop.store(true, Ordering::SeqCst);
+        let t = Instant::now();
+        while self.running.load(Ordering::SeqCst) && t.elapsed() < HOLD_WAIT {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        LiveHold
+    }
+
+    /// The live thread, before a run: true when it may start (nothing holds it). The order matters: a hold
+    /// that comes in between either sees `running` and waits, or is seen here.
+    pub fn try_start(&self) -> bool {
+        self.stop.store(false, Ordering::SeqCst);
+        self.running.store(true, Ordering::SeqCst);
+        if self.holds.load(Ordering::SeqCst) > 0 {
+            self.running.store(false, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    pub fn should_stop(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    /// The live thread, after a run (and after it updated the runtime).
+    pub fn finished(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+}
+
 /// The lock, also after a panic elsewhere (the lease must still be released).
 pub fn lock(s: &Shared) -> MutexGuard<'_, Runtime> {
     s.lock().unwrap_or_else(|e| e.into_inner())
@@ -90,6 +154,8 @@ fn start_timer(shared: Shared) {
 /// Runs one write under the lock, with AWCC paused through the lease when `pause_awcc`, and records it as
 /// the last apply. The glow is handled as `glow` says.
 fn write_with(shared: &Shared, pause_awcc: bool, glow: Glow, f: impl FnOnce(&mut dyn LightIo, &PowerState, &mut Shown) -> Result<String, String>) -> LastApply {
+    // The live animation stops (static colours back) before this write, and not while holding the lock.
+    let _live = LIVE.hold();
     let mut rt = lock(shared);
     let runner = match glow {
         Glow::Keep => None,
@@ -146,6 +212,7 @@ fn write_with(shared: &Shared, pause_awcc: bool, glow: Glow, f: impl FnOnce(&mut
 /// Writes `s` for the current power state, in custom mode only (`None` in awcc mode: the app never writes).
 pub fn apply_settings(shared: &Shared, s: &LightingSettings) -> Option<LastApply> {
     if s.mode != Mode::Custom {
+        let _live = LIVE.hold();
         lock(shared).end_glow();
         return None;
     }
@@ -181,8 +248,10 @@ pub fn restore(shared: &Shared, pause_awcc: bool) -> LastApply {
 /// On quit: the glow stops with the static colours written back (AWCC resumed after), and nothing starts it
 /// again; then any lease still held resumes AWCC.
 pub fn quit(shared: &Shared) {
+    lock(shared).quitting = true;
+    // The live animation stops with the static colours written back.
+    let _live = LIVE.hold();
     let mut rt = lock(shared);
-    rt.quitting = true;
     if let Some(r) = rt.glow.take() {
         if let Err(e) = r.stop(&mut SystemIo) {
             eprintln!("reactive glow: the static colours couldn't be written back on quit: {e}");

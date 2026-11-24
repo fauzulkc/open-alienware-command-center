@@ -178,6 +178,22 @@ keyboard, all keys updated together.
   reads of 6 ms at most, but about 215 MB of private memory committed by the graphics driver (39 MB in RAM),
   against 2 MB with GDI. The clock 0.7 % of one core and 11 MB; mouse paint 0.1 % of one core idle and 11 MB.
 
+## Live lighting in the app (`cockpit-core::live`, `app/src-tauri/src/live.rs`)
+
+The Lighting page's Live section keeps one of the three running while the app is open, tray included:
+`lighting.live` = `{ kind: off | clock | mouse | screen, look, fadeMs, dim, mouseFps, screenFps, smoothMs,
+spread, saturation, gpu }` (missing in older files: off; defaults are the owner's picks above).
+
+- It runs only in custom mode, with the keyboard lit (not dark for sleep, lid or display) and the reactive
+  glow off (`live::wanted`). It replaces the static colours and the keyboard's effect while it runs.
+- One thread runs it, with its own writes. Every other lighting write of the app (a save, a key preview, a power
+  change, AWCC's look, quitting) first takes a hold (`lights::LIVE`): the animation stops with the static
+  colours written back, the write happens, and the thread starts it again once nothing holds it. A hold is
+  never waited on while holding the lighting lock (the thread takes that lock as it finishes).
+- It also stops on its own, checked twice a second, when the saved settings change or it can't show any more.
+- AWCC's lighting programs are paused around each of its writes only. A run that fails shows as the last
+  apply and isn't retried for 30 s unless the settings change.
+
 ## Reactive glow (`cockpit-core::reactive`, `cockpit-core::keyinput`)
 
 > **Tried on the owner's keyboard, 2026-11-24, and turned down.** This keyboard only shows new per-key colours

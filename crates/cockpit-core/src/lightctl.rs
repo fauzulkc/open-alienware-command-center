@@ -203,6 +203,9 @@ pub struct LightingSettings {
     /// The reactive glow: keys warm up as they are pressed (`crate::reactive`). Missing in older files: off.
     #[serde(default)]
     pub reactive: crate::reactive::ReactiveSettings,
+    /// A PC-driven animation the app keeps running (`crate::live`). Missing in older files: off.
+    #[serde(default)]
+    pub live: crate::live::LiveSettings,
 }
 
 impl LightingSettings {
@@ -215,7 +218,7 @@ impl LightingSettings {
 
 impl Default for LightingSettings {
     fn default() -> Self {
-        LightingSettings { mode: Mode::Awcc, keyboard: KeyboardLight::default(), zones: BTreeMap::new(), off_on_sleep: true, off_on_lid_close: true, off_on_display_off: true, dim_on_battery_saver: false, pause_awcc: true, led_balance: LedBalance::default(), led_palette: BTreeMap::new(), reactive: Default::default() }
+        LightingSettings { mode: Mode::Awcc, keyboard: KeyboardLight::default(), zones: BTreeMap::new(), off_on_sleep: true, off_on_lid_close: true, off_on_display_off: true, dim_on_battery_saver: false, pause_awcc: true, led_balance: LedBalance::default(), led_palette: BTreeMap::new(), reactive: Default::default(), live: Default::default() }
     }
 }
 
@@ -247,6 +250,7 @@ impl LightingSettings {
     pub fn validate(&self) -> Result<(), String> {
         self.led_balance.validate()?;
         self.reactive.validate()?;
+        self.live.validate()?;
         for (from, to) in &self.led_palette {
             parse_rgb(from).and_then(|_| parse_rgb(to)).map_err(|e| format!("LED palette {from} -> {to}: {e}"))?;
         }

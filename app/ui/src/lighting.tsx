@@ -1,9 +1,9 @@
 // The Lighting page: the keyboard's colours per key, brightness and effects, when it goes dark, and the zone
 // lights. Contract: docs/lighting-control.md. The decisions live in logic.ts.
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { api, type KeyboardLight, type KeyInfo, type LightingSettings, type LightingStatus, type Rgb } from './api';
+import { api, type KeyboardLight, type KeyInfo, type LightingSettings, type LightingStatus, type LiveSettings, type Rgb } from './api';
 import { Section, Tip } from './components';
-import { debounce, effectInfo, EFFECTS, groupMembers, keyAt, keysAlong, keysInRect, normHex, palette, selectionColor, shownColors, toggleKey, unionKeys, zoneLabel } from './logic';
+import { debounce, effectInfo, EFFECTS, groupMembers, LIVE_KINDS, liveOf, MOUSE_LOOKS, keyAt, keysAlong, keysInRect, normHex, palette, selectionColor, shownColors, toggleKey, unionKeys, zoneLabel } from './logic';
 
 /** Live preview writes one key per call, so only small selections preview while the colour moves; bigger ones
  * show on the keyboard when the change is saved (250 ms after it stops). */
@@ -259,6 +259,10 @@ export function Lighting() {
     const d = draftRef.current;
     if (d) update({ ...d, keyboard: { ...d.keyboard, ...patch } }, now);
   };
+  const setLive = (patch: Partial<LiveSettings>, now = false) => {
+    const d = draftRef.current;
+    if (d) update({ ...d, live: { ...liveOf(d), ...patch } }, now);
+  };
   const commit = () => saver.flush();
   const canPreview = () => draftRef.current?.mode === 'custom' && draftRef.current.keyboard.effect === 'static';
 
@@ -352,6 +356,9 @@ export function Lighting() {
   const own = sel.filter((id) => kb.keys[id] != null).length;
   const zoneIds = Object.keys(draft.zones).map(Number).sort((a, b) => a - b);
   const last = st.lastApply;
+  const live = liveOf(draft);
+  const liveKind = LIVE_KINDS.find((k) => k.id === live.kind) ?? LIVE_KINDS[0];
+  const look = MOUSE_LOOKS.find((k) => k.id === live.look) ?? MOUSE_LOOKS[0];
 
   return (
     <div className="cockpit">
@@ -486,6 +493,68 @@ export function Lighting() {
             </div>
           )}
           <p className="muted small">Effects run in the keyboard's own hardware and override the per-key colours while they run.</p>
+        </Section>
+      )}
+
+      {custom && (
+        <Section title="Live" className="span3" right={live.kind !== 'off' && <span className="lbl ok-t">{liveKind.name} {kb.on && kb.brightness > 0 ? 'running' : 'waits for the backlight'}</span>}>
+          <div className="seg small" role="radiogroup" aria-label="Live animation">
+            {LIVE_KINDS.map((k) => <button key={k.id} role="radio" aria-checked={live.kind === k.id} className={live.kind === k.id ? 'on' : ''} onClick={() => setLive({ kind: k.id }, true)}>{k.name}</button>)}
+          </div>
+          <p className="small">{liveKind.what}</p>
+          {live.kind === 'mouse' && (
+            <>
+              <div className="field lt-fx">
+                <span className="lbl">Look</span>
+                <div className="seg small" role="radiogroup" aria-label="Mouse paint look">
+                  {MOUSE_LOOKS.map((k) => <button key={k.id} role="radio" aria-checked={live.look === k.id} className={live.look === k.id ? 'on' : ''} onClick={() => setLive({ look: k.id }, true)}>{k.name}</button>)}
+                </div>
+                <p className="small">{look.what}</p>
+              </div>
+              <div className="lt-grid">
+                <label className="field">
+                  <span className="lbl">Trail {live.fadeMs === 0 ? 'stays' : `${(live.fadeMs / 1000).toFixed(1)} s`}</span>
+                  <input type="range" min={0} max={6000} step={250} value={live.fadeMs} onChange={(e) => setLive({ fadeMs: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+                </label>
+                {live.look === 'boost' && (
+                  <label className="field">
+                    <span className="lbl">Dimmed keys {live.dim}%</span>
+                    <input type="range" min={5} max={100} step={5} value={live.dim} onChange={(e) => setLive({ dim: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+                  </label>
+                )}
+              </div>
+            </>
+          )}
+          {live.kind === 'screen' && (
+            <div className="lt-grid">
+              <label className="field">
+                <span className="lbl">Variety {Math.round(live.spread * 100)}%</span>
+                <input type="range" min={0} max={100} step={5} value={Math.round(live.spread * 100)} onChange={(e) => setLive({ spread: Number(e.target.value) / 100 })} onPointerUp={commit} onKeyUp={commit} />
+                <small className="muted">0% is one colour, the screen's average; 100% each area its own.</small>
+              </label>
+              <label className="field">
+                <span className="lbl">Colour depth {live.saturation.toFixed(1)}x</span>
+                <input type="range" min={1} max={4} step={0.1} value={live.saturation} onChange={(e) => setLive({ saturation: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+              </label>
+              <label className="field">
+                <span className="lbl">Follows within {(live.smoothMs / 1000).toFixed(1)} s</span>
+                <input type="range" min={0} max={3000} step={100} value={live.smoothMs} onChange={(e) => setLive({ smoothMs: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+              </label>
+              <div className="field">
+                <span className="lbl">Read the screen on</span>
+                <div className="seg small" role="radiogroup" aria-label="Screen reader">
+                  <button role="radio" aria-checked={live.gpu} className={live.gpu ? 'on' : ''} onClick={() => setLive({ gpu: true }, true)}>Graphics card</button>
+                  <button role="radio" aria-checked={!live.gpu} className={!live.gpu ? 'on' : ''} onClick={() => setLive({ gpu: false }, true)}>Processor</button>
+                </div>
+                <small className="muted">{live.gpu ? 'About 3% of one processor core; the graphics driver reserves about 215 MB.' : 'About 13% of one processor core, 2 MB.'}</small>
+              </div>
+            </div>
+          )}
+          <p className="muted small">
+            {live.kind === 'off'
+              ? 'Runs while the app is open, in the tray too. The keyboard chip has no clock or memory for these, so the app drives them.'
+              : 'Runs while the app is open, in the tray too, and pauses while the keyboard is dark (sleep, lid, display off). It replaces your colours and the effect while it runs; they come back when you turn it off. Editing the map pauses it for a moment.'}
+          </p>
         </Section>
       )}
 
