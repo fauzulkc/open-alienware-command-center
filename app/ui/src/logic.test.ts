@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_AWCC_KEYS, DEMO_LAYOUT, type Fan, type KeyboardLight, type KeyInfo, type LightingSettings, type ReactiveSettings, type Snapshot, type Status } from './api';
 import {
-  alertText, BLADES, composeKey, LIVE_DEFAULTS, LIVE_KINDS, liveOf, MOUSE_LOOKS, REACTIVE_DEFAULTS, reactiveOf, debounce, dimHex, drawnRevPerSec, EFFECTS, fanFlag, groupMembers, importAwcc, inkOn, isHex, keyAt, keysAlong, keysInRect, lightingProblem,
+  alertText, BLADES, composeKey, LIVE_DEFAULTS, LIVE_KINDS, liveOf, liveSummary, MOUSE_MODES, TAP_KINDS, toggleTap, REACTIVE_DEFAULTS, reactiveOf, debounce, dimHex, drawnRevPerSec, EFFECTS, fanFlag, groupMembers, importAwcc, inkOn, isHex, keyAt, keysAlong, keysInRect, lightingProblem,
   MAX_DRAWN_REV_PER_S, MAX_FRAME_S, mergeHistory, mostCommon, normHex, palette, rotorPercent, shownColors, stoppedZones, stuckFans, toggleKey, verdict, zoneName,
 } from './logic';
 
@@ -327,15 +327,34 @@ describe('the backend’s checks, mirrored', () => {
     expect(liveOf(lightSettings())).toEqual(LIVE_DEFAULTS);
     expect(LIVE_DEFAULTS).toMatchObject({ kind: 'off', look: 'glow', fadeMs: 2000, dim: 70, spread: 1, saturation: 2, gpu: true });
     expect(lightingProblem(lv({ kind: 'screen' }), tiny, GROUPS)).toBeNull();
-    expect(lightingProblem(lv({ kind: 'sparkle' as never }), tiny, GROUPS)).toMatch(/live animation/);
-    expect(lightingProblem(lv({ look: 'neon' as never }), tiny, GROUPS)).toMatch(/look/);
+    expect(lightingProblem(lv({ kind: 'sparkle' as never }), tiny, GROUPS)).toMatch(/Unknown effect/);
+    expect(lightingProblem(lv({ mouse: 'neon' as never }), tiny, GROUPS)).toMatch(/mouse interaction/);
     expect(lightingProblem(lv({ fadeMs: 20000 }), tiny, GROUPS)).toMatch(/fade/);
     expect(lightingProblem(lv({ dim: 0 }), tiny, GROUPS)).toMatch(/1 to 100 %/);
     expect(lightingProblem(lv({ screenFps: 31 }), tiny, GROUPS)).toMatch(/1 to 30 times/);
     expect(lightingProblem(lv({ spread: 1.2 }), tiny, GROUPS)).toMatch(/variety/);
     expect(lightingProblem(lv({ saturation: 0.5 }), tiny, GROUPS)).toMatch(/colour depth/);
-    expect(LIVE_KINDS.map((k) => k.id)).toEqual(['off', 'clock', 'mouse', 'screen']);
-    expect(MOUSE_LOOKS.map((k) => k.id)).toEqual(['glow', 'uncover', 'reveal', 'boost', 'screen']);
+    expect(LIVE_KINDS.map((k) => k.id)).toEqual(['off', 'clock', 'screen']);
+    expect(MOUSE_MODES.map((k) => k.id)).toEqual(['off', 'glow', 'screen', 'uncover', 'reveal', 'boost']);
+    // Settings saved before the three layers: mouse paint becomes the mouse interaction.
+    expect(liveOf(lv({ kind: 'mouse', look: 'reveal' }))).toMatchObject({ kind: 'off', mouse: 'reveal' });
+    expect(lightingProblem(lv({ tap: ['laser', 'seismic'] }), tiny, GROUPS)).toBeNull();
+    expect(lightingProblem(lv({ tap: ['sparks' as never] }), tiny, GROUPS)).toMatch(/key-press effect/);
+    expect(lightingProblem(lv({ tapColor: 'keys' }), tiny, GROUPS)).toBeNull();
+    expect(lightingProblem(lv({ tapColor: 'red' }), tiny, GROUPS)).toMatch(/key-press colour/);
+    expect(lightingProblem(lv({ tapSpeed: 100 }), tiny, GROUPS)).toMatch(/5 to 80/);
+
+
+  });
+  it('switches key-press effects on and off in a fixed order, and sums up the layers', () => {
+    expect(TAP_KINDS.map((k) => k.id)).toEqual(['laser', 'lightning', 'seismic']);
+    expect(toggleTap([], 'seismic')).toEqual(['seismic']);
+    expect(toggleTap(['seismic'], 'laser')).toEqual(['laser', 'seismic']);
+    expect(toggleTap(['laser', 'seismic'], 'laser')).toEqual(['seismic']);
+    expect(liveSummary(LIVE_DEFAULTS)).toBeNull();
+    expect(liveSummary({ ...LIVE_DEFAULTS, tap: ['laser'] })).toBe('Laser');
+    expect(liveSummary({ ...LIVE_DEFAULTS, kind: 'screen', tap: ['seismic'], mouse: 'glow' })).toBe('Screen mirror + Seismic + White trail');
+    expect(liveSummary({ ...LIVE_DEFAULTS, mouse: 'reveal' })).toBe('Reveal');
   });
   it('words every effect, and only the two-colour ones use the second colour', () => {
     expect(EFFECTS.map((e) => e.id)).toEqual(['static', 'breathing', 'wave', 'dualWave', 'pulse', 'mixPulse', 'nightRider', 'laser']);

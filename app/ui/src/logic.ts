@@ -1,6 +1,6 @@
 // The screens' decisions, kept out of the components so they can be tested on their own (logic.test.ts).
 
-import { hex, sensorName, type Alert, type Fan, type KeyboardLight, type KeyEffect, type KeyInfo, type LightingSettings, type LiveKind, type LiveSettings, type MouseLook, type ReactiveSettings, type Rgb, type Snapshot, type Status } from './api';
+import { hex, sensorName, type Alert, type Fan, type KeyboardLight, type KeyEffect, type KeyInfo, type LightingSettings, type LiveKind, type LiveSettings, type MouseMode, type TapKind, type ReactiveSettings, type Rgb, type Snapshot, type Status } from './api';
 
 /** Above this a sensor counts as hot for the fan checks (the reader's fan rules use the same 80 °C). */
 export const HOT_C = 80;
@@ -222,23 +222,49 @@ export const reactiveOf = (s: LightingSettings): ReactiveSettings => ({ ...REACT
 
 /** The live animation's defaults, as the backend has them: off; the owner's picks (glow, 2 s trail, boost at
  * 70 %; the mirror at spread 1, colour depth 2x, a 0.3 s ease, read on the graphics card). */
-export const LIVE_DEFAULTS: LiveSettings = { kind: 'off', look: 'glow', fadeMs: 2000, dim: 70, mouseFps: 10, screenFps: 8, smoothMs: 300, spread: 1, saturation: 2, gpu: true };
-export const liveOf = (s: LightingSettings): LiveSettings => ({ ...LIVE_DEFAULTS, ...s.live });
+export const LIVE_DEFAULTS: LiveSettings = {
+  kind: 'off', look: 'glow', fadeMs: 2000, dim: 70, mouseFps: 10, screenFps: 8, smoothMs: 300, spread: 1, saturation: 2, gpu: true,
+  tap: [], tapColor: '#FFFFFF', tapSpeed: 30, tapFps: 12, mouse: 'off',
+};
+/** The live settings with defaults; settings saved before the three layers (kind 'mouse' with its look) read
+ * as no effect with that look as the mouse interaction. */
+export const liveOf = (s: LightingSettings): LiveSettings => {
+  const l = { ...LIVE_DEFAULTS, ...s.live };
+  return l.kind === 'mouse' ? { ...l, kind: 'off', mouse: l.look } : l;
+};
 
-/** The live animations, worded plainly. */
+/** The effects the app draws (layer 2, with the keyboard's own effects), worded plainly. */
 export const LIVE_KINDS: { id: LiveKind; name: string; what: string }[] = [
-  { id: 'off', name: 'Off', what: 'Your colours (or the effect) stay on the keyboard.' },
+  { id: 'off', name: 'None', what: 'Your colours as they are.' },
   { id: 'clock', name: 'Clock', what: 'The time across the keyboard in big digits: the hour peach, the minutes cyan; for 5 seconds of every 15 the seconds in pink.' },
-  { id: 'mouse', name: 'Mouse paint', what: 'Your screen is mapped onto the keys (top-left is Esc, bottom-right the arrows); the mouse pointer lights the key under it and leaves a fading trail.' },
   { id: 'screen', name: 'Screen mirror', what: 'The keyboard glows with your screen\'s colours, as one soft gradient: an ambient light for what\'s on screen.' },
 ];
-export const MOUSE_LOOKS: { id: MouseLook; name: string; what: string }[] = [
-  { id: 'glow', name: 'Glow', what: 'Your colours stay; the mouse lights keys white.' },
-  { id: 'uncover', name: 'Uncover', what: 'The keyboard is white; the mouse shows each key\'s own colour.' },
-  { id: 'reveal', name: 'Reveal', what: 'The keyboard is dark; the mouse brings your colours through.' },
-  { id: 'boost', name: 'Boost', what: 'Your colours, dimmed; the mouse brings keys to full brightness.' },
-  { id: 'screen', name: 'Screen colour', what: 'The keyboard is dark; the mouse paints with the screen\'s colour under the pointer.' },
+/** The mouse interactions (layer 3), worded plainly. The screen is mapped onto the keys: top-left is Esc,
+ * bottom-right the arrows. */
+export const MOUSE_MODES: { id: MouseMode; name: string; what: string }[] = [
+  { id: 'off', name: 'Off', what: 'The mouse doesn\'t touch the keyboard.' },
+  { id: 'glow', name: 'White trail', what: 'The key under the pointer lights white and fades back.' },
+  { id: 'screen', name: 'Screen-colour trail', what: 'The key under the pointer takes the screen\'s colour there and fades back.' },
+  { id: 'uncover', name: 'Uncover', what: 'The keyboard turns white; the pointer shows your colours where it goes. Over the clock or mirror it brings your colours through.' },
+  { id: 'reveal', name: 'Reveal', what: 'The keyboard goes dark; the pointer brings your colours through. Over the clock or mirror it brings your colours through.' },
+  { id: 'boost', name: 'Boost', what: 'Your colours dimmed; the pointer brings keys to full brightness. Over the clock or mirror it brings your colours through.' },
 ];
+
+/** The key-press effects, worded plainly. */
+export const TAP_KINDS: { id: TapKind; name: string; what: string }[] = [
+  { id: 'laser', name: 'Laser', what: 'A beam runs out both ways along the row from the key you press.' },
+  { id: 'lightning', name: 'Lightning', what: 'Bolts come in from both ends of the row and strike the key you press.' },
+  { id: 'seismic', name: 'Seismic', what: 'A ring erupts from the key you press across the whole keyboard, in that key\'s colour from your static colours.' },
+];
+/** The key-press effects with `t` switched on or off, in the standard order. */
+export const toggleTap = (on: TapKind[], t: TapKind): TapKind[] => TAP_KINDS.map((k) => k.id).filter((id) => (id === t ? !on.includes(t) : on.includes(id)));
+/** What live lighting will do with these settings, in a few words (null: nothing runs). */
+export function liveSummary(l: LiveSettings): string | null {
+  const effect = l.kind === 'off' || l.kind === 'mouse' ? null : LIVE_KINDS.find((k) => k.id === l.kind)?.name ?? null;
+  const mouse = l.mouse === 'off' ? null : MOUSE_MODES.find((k) => k.id === l.mouse)?.name ?? null;
+  const parts = [effect, ...l.tap.map((t) => TAP_KINDS.find((k) => k.id === t)?.name ?? t), mouse].filter((x): x is string => !!x);
+  return parts.length ? parts.join(' + ') : null;
+}
 
 /** A scheduler for writes: `schedule` keeps only the newest value and runs `fn` once things have been quiet for
  * `ms` (or, with `maxWait`, at least that often while they keep changing); `flush` runs it now (on release);
@@ -343,14 +369,19 @@ export function lightingProblem(s: LightingSettings, layout: KeyInfo[], groups: 
   }
   if (s.live) {
     const l = liveOf(s);
-    if (!LIVE_KINDS.some((k) => k.id === l.kind)) return `Unknown live animation "${l.kind}".`;
-    if (!MOUSE_LOOKS.some((k) => k.id === l.look)) return `Unknown mouse paint look "${l.look}".`;
+    if (!LIVE_KINDS.some((k) => k.id === l.kind)) return `Unknown effect "${l.kind}".`;
+    if (!MOUSE_MODES.some((k) => k.id === l.mouse)) return `Unknown mouse interaction "${l.mouse}".`;
     if (!Number.isInteger(l.fadeMs) || l.fadeMs < 0 || l.fadeMs > 10000) return `The trail's fade must be 0 to 10000 ms, not ${l.fadeMs}.`;
     if (!Number.isInteger(l.dim) || l.dim < 1 || l.dim > 100) return `Boost's dimmed keys must be 1 to 100 %, not ${l.dim}.`;
     for (const [what, v] of [['Mouse paint', l.mouseFps], ['The screen mirror', l.screenFps]] as const) if (!Number.isInteger(v) || v < 1 || v > 30) return `${what} writes 1 to 30 times a second, not ${v}.`;
     if (!Number.isInteger(l.smoothMs) || l.smoothMs < 0 || l.smoothMs > 10000) return `The mirror's ease must be 0 to 10000 ms, not ${l.smoothMs}.`;
     if (!(l.spread >= 0 && l.spread <= 1)) return `The mirror's variety must be 0 to 1, not ${l.spread}.`;
     if (!(l.saturation >= 1 && l.saturation <= 4)) return `The mirror's colour depth must be 1 to 4, not ${l.saturation}.`;
+    for (const t of l.tap) if (!TAP_KINDS.some((k) => k.id === t)) return `Unknown key-press effect "${t}".`;
+    if (l.tapColor !== 'keys' && !isHex(l.tapColor)) return `The key-press colour "${l.tapColor}" is not a #RRGGBB colour.`;
+    if (!Number.isInteger(l.tapSpeed) || l.tapSpeed < 5 || l.tapSpeed > 80) return `Key-press effects run at 5 to 80 keys a second, not ${l.tapSpeed}.`;
+    if (!Number.isInteger(l.tapFps) || l.tapFps < 1 || l.tapFps > 30) return `Key-press effects write 1 to 30 times a second, not ${l.tapFps}.`;
+
   }
   return null;
 }

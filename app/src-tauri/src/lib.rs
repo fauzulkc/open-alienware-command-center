@@ -516,6 +516,10 @@ pub fn run() {
     let (glow_keys, glow_rx) = glow::Keys::new();
     let glow_keys = Arc::new(glow_keys);
     let mut glow_rx = Some(glow_rx);
+    // Key-downs for live lighting's key-press laser (delivered only while it runs).
+    let (live_keys, live_rx) = glow::Keys::new();
+    let live_keys = Arc::new(live_keys);
+    let mut live_rx = Some(live_rx);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)))
         .plugin(tauri_plugin_notification::init())
@@ -580,7 +584,7 @@ pub fn run() {
             #[cfg(windows)]
             {
                 let handle = app.handle().clone();
-                let keys = glow_keys.clone();
+                let (keys, lkeys) = (glow_keys.clone(), live_keys.clone());
                 std::thread::spawn(move || {
                     let mut debounce = boostkey::Debounce::default();
                     let h = handle.clone();
@@ -606,8 +610,12 @@ pub fn run() {
                                 let _ = h2.notification().builder().title("Alien Cockpit").body(&text).show();
                             });
                         },
-                        // Every key-down, for the reactive glow (dropped at once while it isn't running).
-                        move |make, flags| keys.key_down(make, flags),
+                        // Every key-down, for the reactive glow and the live laser (each dropped at once while it
+                        // isn't running).
+                        move |make, flags| {
+                            keys.key_down(make, flags);
+                            lkeys.key_down(make, flags);
+                        },
                     );
                     if let Err(e) = r {
                         eprintln!("boost key listener unavailable: {e:#}");
@@ -621,9 +629,11 @@ pub fn run() {
                 }
                 // The live animation (clock, mouse paint, screen mirror): its own thread, handed off around
                 // every other lighting write.
-                let handle = app.handle().clone();
-                let light = app.state::<App>().light.clone();
-                std::thread::spawn(move || live::run(light, move || handle.state::<App>().settings.lock().unwrap().lighting.clone()));
+                if let Some(rx) = live_rx.take() {
+                    let handle = app.handle().clone();
+                    let (light, keys) = (app.state::<App>().light.clone(), live_keys.clone());
+                    std::thread::spawn(move || live::run(light, keys, rx, move || handle.state::<App>().settings.lock().unwrap().lighting.clone()));
+                }
             }
             // Lighting: find the keyboard (read-only probe), and in custom mode put the person's look back on
             // it (AWCC sets its own at sign-in).

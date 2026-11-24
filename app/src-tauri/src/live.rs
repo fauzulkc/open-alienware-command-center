@@ -1,19 +1,20 @@
-//! The live animation in the app (docs/lighting-control.md, "Live lighting in the app"): the clock, mouse
-//! paint or the screen mirror (`lighting.live`), kept running on this thread while the app is open, tray
-//! included. The animations are cockpit-core's (`live::run`), the same code `cockpit lighting clock|mouse|
-//! screen` runs.
+//! Live lighting in the app (docs/lighting-control.md, "Live lighting in the app"): a base (the static
+//! colours, the clock, mouse paint or the screen mirror) with a sweep and a mouse trail on top
+//! (`lighting.live`), and the clock while the display is off (`clockOnDisplayOff`), kept running on this
+//! thread while the app is open, tray included. The layers are cockpit-core's `live`.
 //!
-//! - It runs only while it can show: custom lighting, a lit keyboard (not dark for sleep, lid or display),
-//!   one chosen ([`live::wanted`]).
+//! - It runs only while there is something to show: custom lighting, a lit keyboard (not dark for sleep, lid
+//!   or display), and a layer chosen or the display off with the clock set ([`live::plan`]).
 //! - Every other lighting write of the app (a save, a preview, a power change, AWCC's look, quitting) first
 //!   takes a hold on it ([`lights::LIVE`]): the animation stops with the static colours written back, the
 //!   write happens, and once nothing holds it this thread starts it again from the saved settings.
-//! - It also stops on its own when the saved settings change or it can't show any more (checked twice a
-//!   second), so a save that writes nothing (AWCC's lighting) still ends it.
+//! - It also stops on its own when the saved settings change or the plan does (the display turning off or
+//!   on, the keyboard going dark), checked twice a second, and starts again with the new plan.
 //! - AWCC's lighting programs are paused around each of its writes only, never for the run (holding them
 //!   makes typing slow).
 //! - A run that fails is shown as the last apply and isn't tried again for 30 s unless the settings change.
 
+use crate::glow::Keys;
 use crate::lights::{self, Shared, LIVE};
 use cockpit_core::lightctl::{self, alienfx::device::Pauser, LastApply, LightingSettings, Shown, SystemIo};
 use cockpit_core::live;
@@ -40,7 +41,9 @@ impl Clock for Steady {
 }
 
 /// The live thread: forever, start the chosen animation when it should run, and run it until it should stop.
-pub fn run(shared: Shared, settings: impl Fn() -> LightingSettings) {
+/// `keys`/`rx`: key-downs from the app's read-only Raw Input listener, delivered only while a run uses the
+/// key-press laser.
+pub fn run(shared: Shared, keys: std::sync::Arc<Keys>, rx: std::sync::mpsc::Receiver<u8>, settings: impl Fn() -> LightingSettings) {
     // Let the app's first write (its look put back at start) go first.
     std::thread::sleep(Duration::from_millis(lightctl::RESUME_DELAY_MS + 1_000));
     let mut failed: Option<(LightingSettings, Instant)> = None;
@@ -61,6 +64,10 @@ pub fn run(shared: Shared, settings: impl Fn() -> LightingSettings) {
             continue;
         }
         let pauser = lightctl::alienfx::device::AwccPauser;
+        let started = live::plan(&s, &p);
+        rx.try_iter().for_each(drop);
+        keys.set_listening(started.is_some_and(|pl| pl.needs_keys()));
+        let mut presses = || rx.try_iter().collect::<Vec<u8>>();
         let mut last_check = 0u64;
         let mut stop = |now: u64| {
             if LIVE.should_stop() {
@@ -72,9 +79,10 @@ pub fn run(shared: Shared, settings: impl Fn() -> LightingSettings) {
             last_check = now;
             let fresh = settings();
             let rt = lights::lock(&shared);
-            fresh != s || rt.quitting || !live::wanted(&fresh, &rt.power)
+            fresh != s || rt.quitting || live::plan(&fresh, &rt.power) != started
         };
-        let r = live::run(&mut SystemIo, &s, &p, prev, s.pause_awcc.then_some(&pauser as &dyn Pauser), &mut Steady(Instant::now()), &mut stop);
+        let r = live::run_windows(&mut SystemIo, &s, &p, prev, s.pause_awcc.then_some(&pauser as &dyn Pauser), &mut Steady(Instant::now()), Some(&mut presses), &mut stop);
+        keys.set_listening(false);
         {
             let mut rt = lights::lock(&shared);
             match r {

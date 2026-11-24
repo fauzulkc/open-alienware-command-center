@@ -180,12 +180,43 @@ keyboard, all keys updated together.
 
 ## Live lighting in the app (`cockpit-core::live`, `app/src-tauri/src/live.rs`)
 
-The Lighting page's Live section keeps one of the three running while the app is open, tray included:
-`lighting.live` = `{ kind: off | clock | mouse | screen, look, fadeMs, dim, mouseFps, screenFps, smoothMs,
-spread, saturation, gpu }` (missing in older files: off; defaults are the owner's picks above).
+The Lighting page is laid out in the owner's three layers of colour (2026-11-25), and the app keeps layers 2
+and 3 running while it's open, tray included, drawn every frame (`live::run`; `cockpit lighting live` runs the
+same in the foreground):
+
+1. **Base profile**: the static per-key colours (the map, base colour, brightness).
+2. **Effect**, one of: none, the **clock** or the **screen mirror** (drawn by the app, `kind` = off | clock |
+   screen), or one of the keyboard's own effects (breathing, wave, ... `keyboard.effect`). The keyboard's own
+   effects run on the chip, smooth, but in place of the per-key colours (one or two colours of their own), so
+   layer 3 rests while one runs. Its Laser fires on key presses on the chip, but over one colour.
+3. **Live interactions**:
+   - **Key presses** (`tap`, any of): `laser` (a beam both ways along the pressed key's row), `lightning`
+     (bolts in from both ends of the row, striking the key), `seismic` (a ring erupting over the whole
+     keyboard, out to the corners in about 0.1 s and fading, in the pressed key's colour from the static
+     profile). Laser and lightning use `tapColor` (or `keys`: each key's static colour), and always the keys'
+     static colours over the screen mirror. `tapSpeed` keys a second (default 30), at most `tapFps` writes a
+     second (12) while one runs. Key presses come from the app's read-only Raw Input listener (the boost
+     key's), as LED ids only, delivered only while a run uses them; nothing records them.
+   - **Mouse** (`mouse`): off, `glow` (a white trail), `screen` (a screen-colour trail), or `uncover` /
+     `reveal` / `boost` (the profile shown white, dark or dimmed to `dim` %, the pointer bringing the static
+     colours back where it goes; over the clock or mirror they bring the static colours through). The screen
+     maps onto the keys (top-left = Esc), the trail fades over `fadeMs`. Settings saved before the layers kept
+     this as `kind: mouse` with `look`; they still read that way.
+
+`lighting.live` = `{ kind, look, fadeMs, dim, mouseFps, screenFps, smoothMs, spread, saturation, gpu, tap,
+tapColor, tapSpeed, tapFps, mouse }`; missing fields take their defaults (nothing runs).
+`clockOnDisplayOff` (Keep dark → When the display turns off: Stay lit | Go dark | Show the clock) shows the
+clock alone while the display is off, instead of going dark (`live::plan`).
+
+Tried on the owner's keyboard, 2026-11-25: automatic sweeps (laser, wave, back and forth over the static
+colours) weren't wanted; the key-press laser was ("that's the one"); lightning came from the owner, as did
+seismic, which first spread too slowly and now "erupts like a snap"; over the screen mirror the beams take the
+static key colours; the seismic ring takes the pressed key's static colour.
 
 - It runs only in custom mode, with the keyboard lit (not dark for sleep, lid or display) and the reactive
-  glow off (`live::wanted`). It replaces the static colours and the keyboard's effect while it runs.
+  glow off, when there is something to draw (`live::plan`). It replaces the keyboard's own effect while it
+  runs. When the display turns off or on, or the keyboard goes dark, the plan changes and the run restarts
+  with the new one.
 - One thread runs it, with its own writes. Every other lighting write of the app (a save, a key preview, a power
   change, AWCC's look, quitting) first takes a hold (`lights::LIVE`): the animation stops with the static
   colours written back, the write happens, and the thread starts it again once nothing holds it. A hold is

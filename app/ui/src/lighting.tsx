@@ -1,9 +1,9 @@
 // The Lighting page: the keyboard's colours per key, brightness and effects, when it goes dark, and the zone
 // lights. Contract: docs/lighting-control.md. The decisions live in logic.ts.
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { api, type KeyboardLight, type KeyInfo, type LightingSettings, type LightingStatus, type LiveSettings, type Rgb } from './api';
+import { api, type KeyboardLight, type KeyEffect, type KeyInfo, type LightingSettings, type LightingStatus, type LiveSettings, type Rgb } from './api';
 import { Section, Tip } from './components';
-import { debounce, effectInfo, EFFECTS, groupMembers, LIVE_KINDS, liveOf, MOUSE_LOOKS, keyAt, keysAlong, keysInRect, normHex, palette, selectionColor, shownColors, toggleKey, unionKeys, zoneLabel } from './logic';
+import { debounce, effectInfo, EFFECTS, groupMembers, LIVE_KINDS, liveOf, liveSummary, MOUSE_MODES, TAP_KINDS, toggleTap, keyAt, keysAlong, keysInRect, normHex, palette, selectionColor, shownColors, toggleKey, unionKeys, zoneLabel } from './logic';
 
 /** Live preview writes one key per call, so only small selections preview while the colour moves; bigger ones
  * show on the keyboard when the change is saved (250 ms after it stops). */
@@ -263,6 +263,14 @@ export function Lighting() {
     const d = draftRef.current;
     if (d) update({ ...d, live: { ...liveOf(d), ...patch } }, now);
   };
+  // Layer 2: one effect, either drawn by the app (clock, screen mirror) or the keyboard's own.
+  const pickEffect = (id: 'none' | 'clock' | 'screen' | KeyEffect) => {
+    const d = draftRef.current;
+    if (!d) return;
+    const app = id === 'clock' || id === 'screen';
+    const effect: KeyEffect = app || id === 'none' ? 'static' : id;
+    update({ ...d, keyboard: { ...d.keyboard, effect }, live: { ...liveOf(d), kind: app ? id : 'off' } }, true);
+  };
   const commit = () => saver.flush();
   const canPreview = () => draftRef.current?.mode === 'custom' && draftRef.current.keyboard.effect === 'static';
 
@@ -357,8 +365,12 @@ export function Lighting() {
   const zoneIds = Object.keys(draft.zones).map(Number).sort((a, b) => a - b);
   const last = st.lastApply;
   const live = liveOf(draft);
-  const liveKind = LIVE_KINDS.find((k) => k.id === live.kind) ?? LIVE_KINDS[0];
-  const look = MOUSE_LOOKS.find((k) => k.id === live.look) ?? MOUSE_LOOKS[0];
+  const hardware = kb.effect !== 'static' && live.kind !== 'clock' && live.kind !== 'screen';
+  const effectId = live.kind === 'clock' || live.kind === 'screen' ? live.kind : kb.effect === 'static' ? 'none' : kb.effect;
+  const effectWhat = hardware ? fx.what : (LIVE_KINDS.find((k) => k.id === (effectId === 'none' ? 'off' : effectId)) ?? LIVE_KINDS[0]).what;
+  const mouseMode = MOUSE_MODES.find((k) => k.id === live.mouse) ?? MOUSE_MODES[0];
+  const liveNow = liveSummary(live);
+  const displayOff = draft.clockOnDisplayOff ? 'clock' : draft.offOnDisplayOff ? 'dark' : 'keep';
 
   return (
     <div className="cockpit">
@@ -393,7 +405,7 @@ export function Lighting() {
         </div>
       )}
 
-      <Section title={custom ? (perKey ? 'Keyboard map · click, Shift/Ctrl-click or drag' : `Keyboard map · ${fx.name} runs on the keyboard`) : "Keyboard map · AWCC's look"} className="span2"
+      <Section title={custom ? (perKey ? '1 · Base profile · click, Shift/Ctrl-click or drag' : `1 · Base profile · ${fx.name} runs on the keyboard`) : "Keyboard map · AWCC's look"} className="span2"
         right={perKey && (
           <div className="seg small" role="radiogroup" aria-label="Map tool">
             <button role="radio" aria-checked={tool === 'select'} className={tool === 'select' ? 'on' : ''} onClick={() => setTool('select')}>Select</button>
@@ -455,7 +467,7 @@ export function Lighting() {
       )}
 
       {custom && (
-        <Section title="Whole keyboard" className="span2">
+        <Section title="Base profile · whole keyboard" className="span2">
           <div className="lt-grid">
             <Switch checked={kb.on} onChange={(v) => setKb({ on: v }, true)} name={kb.on ? 'Backlight on' : 'Backlight off'} what="Off keeps every colour for when it's back on." />
             <label className="field">
@@ -466,17 +478,23 @@ export function Lighting() {
             <div className="field">
               <span className="lbl">Base colour</span>
               <ColourField label="Base colour" value={kb.color} onChange={(c) => setKb({ color: c })} onCommit={commit} />
-              <small className="muted">{kb.effect === 'static' ? 'For keys without their own or a group colour.' : `The colour ${fx.name.toLowerCase()} uses.`}</small>
+              <small className="muted">{hardware ? `The colour ${fx.name.toLowerCase()} uses.` : 'For keys without their own or a group colour.'}</small>
             </div>
           </div>
-          <div className="field lt-fx">
-            <span className="lbl">Effect</span>
-            <div className="seg small" role="radiogroup" aria-label="Effect">
-              {EFFECTS.map((e) => <button key={e.id} role="radio" aria-checked={kb.effect === e.id} className={kb.effect === e.id ? 'on' : ''} onClick={() => setKb({ effect: e.id }, true)}>{e.name}</button>)}
-            </div>
-            <p className="small">{fx.what}</p>
+          <p className="muted small">Your colours on the map are the base profile. The effect and the live interactions draw over them.</p>
+        </Section>
+      )}
+
+      {custom && (
+        <Section title="2 · Effect" className="span3">
+          <div className="seg small" role="radiogroup" aria-label="Effect">
+            <button role="radio" aria-checked={effectId === 'none'} className={effectId === 'none' ? 'on' : ''} onClick={() => pickEffect('none')}>None</button>
+            <button role="radio" aria-checked={effectId === 'clock'} className={effectId === 'clock' ? 'on' : ''} onClick={() => pickEffect('clock')}>Clock</button>
+            <button role="radio" aria-checked={effectId === 'screen'} className={effectId === 'screen' ? 'on' : ''} onClick={() => pickEffect('screen')}>Screen mirror</button>
+            {EFFECTS.filter((e) => e.id !== 'static').map((e) => <button key={e.id} role="radio" aria-checked={effectId === e.id} className={effectId === e.id ? 'on' : ''} onClick={() => pickEffect(e.id)}>{e.name}</button>)}
           </div>
-          {(fx.tempo || fx.color2) && (
+          <p className="small">{effectWhat}</p>
+          {hardware && (fx.tempo || fx.color2) && (
             <div className="lt-grid">
               {fx.tempo && (
                 <label className="field">
@@ -491,39 +509,6 @@ export function Lighting() {
                 </div>
               )}
             </div>
-          )}
-          <p className="muted small">Effects run in the keyboard's own hardware and override the per-key colours while they run.</p>
-        </Section>
-      )}
-
-      {custom && (
-        <Section title="Live" className="span3" right={live.kind !== 'off' && <span className="lbl ok-t">{liveKind.name} {kb.on && kb.brightness > 0 ? 'running' : 'waits for the backlight'}</span>}>
-          <div className="seg small" role="radiogroup" aria-label="Live animation">
-            {LIVE_KINDS.map((k) => <button key={k.id} role="radio" aria-checked={live.kind === k.id} className={live.kind === k.id ? 'on' : ''} onClick={() => setLive({ kind: k.id }, true)}>{k.name}</button>)}
-          </div>
-          <p className="small">{liveKind.what}</p>
-          {live.kind === 'mouse' && (
-            <>
-              <div className="field lt-fx">
-                <span className="lbl">Look</span>
-                <div className="seg small" role="radiogroup" aria-label="Mouse paint look">
-                  {MOUSE_LOOKS.map((k) => <button key={k.id} role="radio" aria-checked={live.look === k.id} className={live.look === k.id ? 'on' : ''} onClick={() => setLive({ look: k.id }, true)}>{k.name}</button>)}
-                </div>
-                <p className="small">{look.what}</p>
-              </div>
-              <div className="lt-grid">
-                <label className="field">
-                  <span className="lbl">Trail {live.fadeMs === 0 ? 'stays' : `${(live.fadeMs / 1000).toFixed(1)} s`}</span>
-                  <input type="range" min={0} max={6000} step={250} value={live.fadeMs} onChange={(e) => setLive({ fadeMs: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
-                </label>
-                {live.look === 'boost' && (
-                  <label className="field">
-                    <span className="lbl">Dimmed keys {live.dim}%</span>
-                    <input type="range" min={5} max={100} step={5} value={live.dim} onChange={(e) => setLive({ dim: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
-                  </label>
-                )}
-              </div>
-            </>
           )}
           {live.kind === 'screen' && (
             <div className="lt-grid">
@@ -550,10 +535,67 @@ export function Lighting() {
               </div>
             </div>
           )}
+          <p className="muted small">{hardware
+            ? 'This one runs on the keyboard\'s own chip: smooth, but in place of your colours, so the live interactions rest while it runs.'
+            : 'None, Clock and Screen mirror are drawn by the app, with the live interactions on top. The others run on the keyboard\'s own chip.'}</p>
+        </Section>
+      )}
+
+      {custom && (
+        <Section title="3 · Live interactions" className="span3" right={liveNow && !hardware && <span className="lbl ok-t">{liveNow} {kb.on && kb.brightness > 0 ? 'on' : '(waits for the backlight)'}</span>}>
+          {hardware && <p className="m-res">They rest while {fx.name} runs on the keyboard. Choose None, Clock or Screen mirror under Effect to use them.</p>}
+          <div className="field lt-fx">
+            <span className="lbl">Key presses</span>
+            <div className="row">
+              {TAP_KINDS.map((t) => <button key={t.id} role="switch" aria-checked={live.tap.includes(t.id)} className={`chip ${live.tap.includes(t.id) ? 'on' : ''}`} onClick={() => setLive({ tap: toggleTap(live.tap, t.id) }, true)}>{t.name}</button>)}
+            </div>
+            <p className="small">{live.tap.length ? live.tap.map((t) => TAP_KINDS.find((k) => k.id === t)!.what).join(' ') : 'Off. Pick any to combine them.'}</p>
+          </div>
+          {live.tap.length > 0 && (
+            <div className="lt-grid">
+              {(live.tap.includes('laser') || live.tap.includes('lightning')) && (
+                <div className="field">
+                  <span className="lbl">Beam colour</span>
+                  {live.kind === 'screen' ? (
+                    <small className="muted">Over the screen mirror the beams show your own key colours.</small>
+                  ) : (
+                    <>
+                      <ColourField label="Beam colour" value={live.tapColor === 'keys' ? '#FFFFFF' : live.tapColor} disabled={live.tapColor === 'keys'} onChange={(c) => setLive({ tapColor: c })} onCommit={commit} />
+                      <button className={`chip ${live.tapColor === 'keys' ? 'on' : ''}`} onClick={() => setLive({ tapColor: live.tapColor === 'keys' ? '#FFFFFF' : 'keys' }, true)}>Your key colours</button>
+                    </>
+                  )}
+                </div>
+              )}
+              <label className="field">
+                <span className="lbl">Speed {live.tapSpeed} keys/s</span>
+                <input type="range" min={10} max={80} step={5} value={live.tapSpeed} onChange={(e) => setLive({ tapSpeed: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+                {live.tap.includes('seismic') && <small className="muted">Seismic erupts in the pressed key's colour from your static colours.</small>}
+              </label>
+            </div>
+          )}
+          <div className="field lt-fx">
+            <span className="lbl">Mouse</span>
+            <div className="seg small" role="radiogroup" aria-label="Mouse">
+              {MOUSE_MODES.map((k) => <button key={k.id} role="radio" aria-checked={live.mouse === k.id} className={live.mouse === k.id ? 'on' : ''} onClick={() => setLive({ mouse: k.id }, true)}>{k.name}</button>)}
+            </div>
+            <p className="small">{mouseMode.what}{live.mouse !== 'off' && ' Your screen is mapped onto the keys: top-left is Esc, bottom-right the arrows.'}</p>
+          </div>
+          {live.mouse !== 'off' && (
+            <div className="lt-grid">
+              <label className="field">
+                <span className="lbl">Trail {live.fadeMs === 0 ? 'stays' : `${(live.fadeMs / 1000).toFixed(1)} s`}</span>
+                <input type="range" min={0} max={6000} step={250} value={live.fadeMs} onChange={(e) => setLive({ fadeMs: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+              </label>
+              {live.mouse === 'boost' && live.kind === 'off' && (
+                <label className="field">
+                  <span className="lbl">Dimmed keys {live.dim}%</span>
+                  <input type="range" min={5} max={100} step={5} value={live.dim} onChange={(e) => setLive({ dim: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+                </label>
+              )}
+            </div>
+          )}
           <p className="muted small">
-            {live.kind === 'off'
-              ? 'Runs while the app is open, in the tray too. The keyboard chip has no clock or memory for these, so the app drives them.'
-              : 'Runs while the app is open, in the tray too, and pauses while the keyboard is dark (sleep, lid, display off). It replaces your colours and the effect while it runs; they come back when you turn it off. Editing the map pauses it for a moment.'}
+            Drawn by the app while it's open, in the tray too; they pause while the keyboard is dark (sleep, lid, display off). Key presses and the pointer are read only to draw these and never stored.
           </p>
         </Section>
       )}
@@ -562,7 +604,15 @@ export function Lighting() {
         <div className="lt-stack">
           <Switch checked={draft.offOnSleep} onChange={(v) => update({ ...draft, offOnSleep: v }, true)} name="When the laptop sleeps" what="Back on when it wakes." />
           <Switch checked={draft.offOnLidClose} onChange={(v) => update({ ...draft, offOnLidClose: v }, true)} name="With the lid closed" />
-          <Switch checked={draft.offOnDisplayOff} onChange={(v) => update({ ...draft, offOnDisplayOff: v }, true)} name="When the display turns off" />
+          <div className="field">
+            <span className="lbl">When the display turns off</span>
+            <div className="seg small" role="radiogroup" aria-label="When the display turns off">
+              <button role="radio" aria-checked={displayOff === 'keep'} className={displayOff === 'keep' ? 'on' : ''} onClick={() => update({ ...draft, offOnDisplayOff: false, clockOnDisplayOff: false }, true)}>Stay lit</button>
+              <button role="radio" aria-checked={displayOff === 'dark'} className={displayOff === 'dark' ? 'on' : ''} onClick={() => update({ ...draft, offOnDisplayOff: true, clockOnDisplayOff: false }, true)}>Go dark</button>
+              <button role="radio" aria-checked={displayOff === 'clock'} className={displayOff === 'clock' ? 'on' : ''} onClick={() => update({ ...draft, offOnDisplayOff: false, clockOnDisplayOff: true }, true)}>Show the clock</button>
+            </div>
+            {displayOff === 'clock' && <small className="muted">The keyboard shows the time in big digits until the display is back.</small>}
+          </div>
           <Switch checked={draft.dimOnBatterySaver} onChange={(v) => update({ ...draft, dimOnBatterySaver: v }, true)} name="Dim on Energy Saver" what="30% brightness while Windows Energy Saver is on." />
           <Switch checked={draft.pauseAwcc} onChange={(v) => update({ ...draft, pauseAwcc: v }, true)} name="Pause AWCC's lighting while writing"
             what="AWCC's two lighting programs are held for the moment of each write, so only one program talks to the keyboard at a time." />

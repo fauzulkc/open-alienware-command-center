@@ -70,6 +70,10 @@ export interface ReactiveSettings {
 /** A PC-driven animation the app keeps running (`lighting.live`). */
 export type LiveKind = 'off' | 'clock' | 'mouse' | 'screen';
 export type MouseLook = 'glow' | 'uncover' | 'reveal' | 'boost' | 'screen';
+/** The mouse interaction: off, a white trail (glow), a screen-colour trail (screen), or uncover / reveal / boost. */
+export type MouseMode = 'off' | MouseLook;
+/** Key-press effects drawn over the base; any can be on together. */
+export type TapKind = 'laser' | 'lightning' | 'seismic';
 export interface LiveSettings {
   kind: LiveKind;
   /** mouse paint's look */
@@ -90,6 +94,16 @@ export interface LiveSettings {
   saturation: number;
   /** screen mirror: read the screen on the graphics card (else through GDI) */
   gpu: boolean;
+  /** key-press effects over the base */
+  tap: TapKind[];
+  /** laser and lightning colour, #RRGGBB, or 'keys' for each key's own colour (always the keys' over the screen mirror) */
+  tapColor: string;
+  /** how fast they run, 5..80 keys a second */
+  tapSpeed: number;
+  /** writes a second while one runs, 1..30 */
+  tapFps: number;
+  /** the mouse interaction */
+  mouse: MouseMode;
 }
 export interface LightingSettings {
   /** 'awcc': the app never writes (AWCC's look stays) */
@@ -100,6 +114,8 @@ export interface LightingSettings {
   offOnSleep: boolean;
   offOnLidClose: boolean;
   offOnDisplayOff: boolean;
+  /** the keyboard clock while the display is off (instead of dark); missing in older settings: off */
+  clockOnDisplayOff?: boolean;
   dimOnBatterySaver: boolean;
   pauseAwcc: boolean;
   /** The keyboard LEDs' colour balance, % per channel: colours are corrected on the way to the keyboard. */

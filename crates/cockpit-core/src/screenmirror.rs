@@ -63,7 +63,7 @@ impl Default for Ambient {
     }
 }
 
-fn to_rgb(c: [f64; 3]) -> Rgb {
+pub(crate) fn to_rgb(c: [f64; 3]) -> Rgb {
     let ch = |x: f64| x.round().clamp(0.0, 255.0) as u8;
     Rgb::new(ch(c[0]), ch(c[1]), ch(c[2]))
 }

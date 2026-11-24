@@ -189,6 +189,10 @@ pub struct LightingSettings {
     pub off_on_lid_close: bool,
     /// Dark when the display turns off.
     pub off_on_display_off: bool,
+    /// The keyboard clock when the display turns off (instead of dark; `crate::live`). Missing in older
+    /// files: off.
+    #[serde(default)]
+    pub clock_on_display_off: bool,
     /// Brightness 30 % while Windows Energy Saver is on.
     pub dim_on_battery_saver: bool,
     /// Suspend AWCC's lighting programs around each write.
@@ -218,7 +222,7 @@ impl LightingSettings {
 
 impl Default for LightingSettings {
     fn default() -> Self {
-        LightingSettings { mode: Mode::Awcc, keyboard: KeyboardLight::default(), zones: BTreeMap::new(), off_on_sleep: true, off_on_lid_close: true, off_on_display_off: true, dim_on_battery_saver: false, pause_awcc: true, led_balance: LedBalance::default(), led_palette: BTreeMap::new(), reactive: Default::default(), live: Default::default() }
+        LightingSettings { mode: Mode::Awcc, keyboard: KeyboardLight::default(), zones: BTreeMap::new(), off_on_sleep: true, off_on_lid_close: true, off_on_display_off: true, clock_on_display_off: false, dim_on_battery_saver: false, pause_awcc: true, led_balance: LedBalance::default(), led_palette: BTreeMap::new(), reactive: Default::default(), live: Default::default() }
     }
 }
 
@@ -318,9 +322,10 @@ pub struct PowerState {
     pub energy_saver: bool,
 }
 
-/// A dark trigger is active (sleep, lid closed, display off, each by its setting).
+/// A dark trigger is active (sleep, lid closed, display off, each by its setting; the display off shows the
+/// clock instead when `clock_on_display_off`).
 pub fn is_dark(s: &LightingSettings, p: &PowerState) -> bool {
-    (p.suspended && s.off_on_sleep) || (p.lid_closed && s.off_on_lid_close) || (p.display_off && s.off_on_display_off)
+    (p.suspended && s.off_on_sleep) || (p.lid_closed && s.off_on_lid_close) || (p.display_off && s.off_on_display_off && !s.clock_on_display_off)
 }
 
 /// The brightness to show, %: 0 when off or dark, capped at [`DIM_PCT`] under Energy Saver when set.

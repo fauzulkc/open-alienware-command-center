@@ -41,6 +41,11 @@ impl Keys {
         (Keys { listening: AtomicBool::new(false), tx: Mutex::new(tx) }, rx)
     }
 
+    /// Turns delivery on or off (the live thread's laser: on only while it runs).
+    pub fn set_listening(&self, on: bool) {
+        self.listening.store(on, Ordering::Relaxed);
+    }
+
     /// A key-down (Raw Input make code and flags): its LED id to the glow while it runs; dropped otherwise.
     pub fn key_down(&self, make: u16, flags: u16) {
         if !self.listening.load(Ordering::Relaxed) {

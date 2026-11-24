@@ -212,6 +212,36 @@ pub enum LightingCmd {
         #[arg(long, default_value = "glow", value_parser = ["glow", "uncover", "reveal", "boost", "screen"])]
         look: String,
     },
+    /// Live lighting, in the foreground (Windows), as the app runs it: your static colours, an effect (none,
+    /// clock, screen mirror) and live interactions on top (key presses, the mouse). Starts from the saved
+    /// `lighting.live`; the options here replace parts of it for this run only (nothing is saved). Ctrl+C or
+    /// --seconds stops it and writes the static colours back.
+    Live {
+        /// Stop after this many seconds (default: until Ctrl+C).
+        #[arg(long, value_name = "N")]
+        seconds: Option<u64>,
+        /// The effect over your colours: none, clock or screen (the mirror).
+        #[arg(long, value_parser = ["none", "clock", "screen"])]
+        effect: Option<String>,
+        /// On key presses, comma-separated: laser (a beam both ways along the pressed key's row), lightning
+        /// (bolts in from both ends of the row, striking the key), seismic (rings over the whole keyboard in
+        /// the key's own colour); or none. Key presses are read read-only and never stored.
+        #[arg(long, value_name = "laser,lightning,seismic")]
+        tap: Option<String>,
+        /// The laser's and lightning's colour.
+        #[arg(long, value_name = "#RRGGBB")]
+        tap_color: Option<String>,
+        /// How fast the laser and lightning run, keys a second (5-80).
+        #[arg(long)]
+        tap_speed: Option<u32>,
+        /// The mouse: off, glow (a white trail), screen (a screen-colour trail), or uncover, reveal, boost (the
+        /// static colours where the pointer goes over a white, dark or dimmed keyboard).
+        #[arg(long, value_parser = ["off", "glow", "screen", "uncover", "reveal", "boost"])]
+        mouse: Option<String>,
+        /// Run as if the display were off (with the clock for it).
+        #[arg(long)]
+        display_off: bool,
+    },
     /// Screen mirror, in the foreground (Windows): the keyboard as an ambient light for the screen. The screen
     /// maps onto the keys as in mouse paint (top-left = Esc, bottom-right = Right Arrow); the whole keyboard is
     /// one gradient of the screen's areas, pulled toward its average (--spread), deepened (--saturation) and
@@ -986,6 +1016,7 @@ fn lighting_cmd(ctx: &mut Ctx, cmd: LightingCmd, dry_run: bool) -> R {
         LightingCmd::ImportAwcc => lighting_import(ctx, dry_run),
         LightingCmd::Reactive { seconds } => lighting_reactive(ctx, seconds, dry_run),
         LightingCmd::Clock { seconds, base } => lighting_clock(ctx, seconds, &base, dry_run),
+        LightingCmd::Live { seconds, effect, tap, tap_color, tap_speed, mouse, display_off } => lighting_live(ctx, seconds, LiveOverrides { effect, tap, tap_color, tap_speed, mouse, display_off }),
         LightingCmd::Screen { seconds, fps, smooth_ms, spread, saturation, reader } => lighting_screen(ctx, seconds, screenmirror::Ambient { fps, smooth_ms, spread, saturation }, reader == "gpu", dry_run),
         LightingCmd::Mouse { seconds, fps, fade_ms, dim, look } => lighting_mouse(ctx, seconds, fps, fade_ms, dim, &look, dry_run),
     }
@@ -1464,6 +1495,86 @@ fn lighting_screen(ctx: &mut Ctx, seconds: Option<u64>, amb: screenmirror::Ambie
     let sum = screenmirror::run(io.as_mut(), &l, &power, prev, l.pause_awcc.then_some(pauser.as_ref()), &amb, &mut GlowClock(&mut *ctx.clock), src.as_mut(), &mut |now| seconds.is_some_and(|s| now.saturating_sub(start) >= s * 1_000)).map_err(Fail::Error)?;
     let t = format!("Screen mirror stopped after {:.1} s: {} screen reads (slowest {} ms), {} writes, {} key colours, {} reports after the first {}. The static colours are back: {}", sum.ran_ms as f64 / 1_000.0, sum.grabs, sum.max_grab_ms, sum.frames, sum.keys, sum.reports, sum.first, sum.restore.text());
     ctx.emit(json!({ "summary": sum }), &t)
+}
+
+// ---------------------------------------------------------------- live layers
+
+struct LiveOverrides {
+    effect: Option<String>,
+    tap: Option<String>,
+    tap_color: Option<String>,
+    tap_speed: Option<u32>,
+    mouse: Option<String>,
+    display_off: bool,
+}
+
+/// `cockpit lighting live`: the app's layered live lighting in the foreground, from the saved settings with
+/// this run's changes (nothing saved), until Ctrl+C or `--seconds`.
+fn lighting_live(ctx: &mut Ctx, seconds: Option<u64>, o: LiveOverrides) -> R {
+    use cockpit_core::live::{self, LiveKind, TapKind};
+    let mut l = Settings::load_from(&ctx.settings_path()).lighting;
+    if let Some(e) = o.effect {
+        l.live.kind = if e == "none" { LiveKind::Off } else { LiveKind::parse(&e).unwrap_or_default() };
+    }
+    if let Some(t) = o.tap {
+        l.live.tap = Vec::new();
+        for part in t.split(',').map(str::trim).filter(|p| !p.is_empty() && *p != "none") {
+            l.live.tap.push(TapKind::parse(part).ok_or_else(|| Fail::Refused(format!("'{part}' isn't a key-press effect: use laser, lightning, seismic or none")))?);
+        }
+    }
+    if let Some(c) = o.tap_color {
+        l.live.tap_color = c;
+    }
+    if let Some(v) = o.tap_speed {
+        l.live.tap_speed = v;
+    }
+    if let Some(m) = o.mouse {
+        if l.live.kind == LiveKind::Mouse {
+            l.live.kind = LiveKind::Off;
+        }
+        l.live.mouse = m;
+    }
+    let power = PowerState { display_off: o.display_off, ..Default::default() };
+    if o.display_off {
+        l.clock_on_display_off = true;
+    }
+    l.validate().map_err(Fail::Refused)?;
+    if !cfg!(windows) {
+        return Err(Fail::Refused("`cockpit lighting live` is Windows only: it reads the clock, the pointer and the screen through Windows.".into()));
+    }
+    ctx.lights_here()?;
+    let plan = live::plan(&l, &power).ok_or_else(|| Fail::Refused("nothing to run: choose the clock or screen effect, a key-press effect or a mouse interaction (and custom lighting, keyboard on, Static on the keyboard)".into()))?;
+    // Key presses for the laser: read-only Raw Input on its own thread, LED ids only.
+    let (tx, rx) = std::sync::mpsc::channel::<u8>();
+    #[cfg(windows)]
+    if plan.needs_keys() && ctx.lights.is_none() {
+        std::thread::spawn(move || {
+            let r = cockpit_core::keyinput::win::listen("CockpitLiveKeys", move |make, flags| {
+                if let Some(id) = cockpit_core::keyinput::led_for(make, flags) {
+                    let _ = tx.send(id);
+                }
+            });
+            if let Err(e) = r {
+                eprintln!("key presses can't be read: {e:#}");
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    drop(tx);
+    let mut presses = || rx.try_iter().collect::<Vec<u8>>();
+    let mut io = ctx.light_io();
+    let pauser = io.pauser();
+    pauser.recover();
+    if !ctx.json {
+        let until = seconds.map_or("Ctrl+C stops it".to_string(), |s| format!("it stops after {s} s or on Ctrl+C"));
+        writeln!(ctx.out, "Live lighting on: {plan:?}; {until} and the static colours come back.")?;
+        ctx.out.flush()?;
+    }
+    ctx.clock.catch_stop();
+    let start = ctx.clock.now_ms();
+    let prev = shown_by(&l);
+    let text = live::run_windows(io.as_mut(), &l, &power, prev, l.pause_awcc.then_some(pauser.as_ref()), &mut GlowClock(&mut *ctx.clock), Some(&mut presses), &mut |now| seconds.is_some_and(|s| now.saturating_sub(start) >= s * 1_000)).map_err(Fail::Error)?;
+    ctx.emit(json!({ "text": text }), &text)
 }
 
 // ---------------------------------------------------------------- the log, settings, the boost key
