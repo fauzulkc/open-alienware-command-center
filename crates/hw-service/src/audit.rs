@@ -51,7 +51,7 @@ pub fn utc(t: SystemTime) -> String {
 /// One write line. `op` and `value` say what was asked; `outcome` how it went.
 pub fn line(at: SystemTime, by: By, op: &str, value: &str, outcome: &str) -> String {
     let who = match by {
-        By::Client(c) => format!("by=client pid={} image={}", c.pid, c.image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| c.image.display().to_string())),
+        By::Client(c) => format!("by=client pid={} image={}", c.pid, crate::identity::image_name(&c.image)),
         By::Service => format!("by=service pid={} image={} (the service's own safety write)", std::process::id(), SERVICE_IMAGE),
     };
     format!("write {} {who} op={op} value={} outcome={}", utc(at), clean(value), clean_outcome(outcome))

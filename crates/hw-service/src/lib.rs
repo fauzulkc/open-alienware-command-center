@@ -120,7 +120,7 @@ impl Answers {
 mod tests {
     use super::*;
     use controller::Controller;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
     use wiregent_hw::replay::Replay;
 
@@ -131,6 +131,22 @@ mod tests {
         answers: Answers,
         clock: Arc<AtomicU64>,
         lines: Arc<Mutex<Vec<String>>>,
+        /// Set by the controller thread when it has nothing queued and is between steps.
+        idle: Arc<AtomicBool>,
+    }
+
+    impl Rig {
+        /// One request, sent only once the controller has finished the previous one. The controller runs every
+        /// request queued at a step at that step's time, so a request sent while it was still finishing the
+        /// last one used to land in the same simulated second and trip the 5-a-second limit (a flaky test).
+        fn ask(&self, client: &Client, req: Request) -> Response {
+            while !self.idle.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            self.idle.store(false, Ordering::SeqCst);
+            let r = self.answers.answer(client, req);
+            r
+        }
     }
 
     impl Drop for Rig {
@@ -142,6 +158,8 @@ mod tests {
     fn rig() -> Rig {
         let shared = Arc::new(controller::Shared::default());
         let s = shared.clone();
+        let idle = Arc::new(AtomicBool::new(true));
+        let idle_c = idle.clone();
         std::thread::spawn(move || {
             let fw = Replay::from_capture(&wiregent_oem_alienware::REFERENCE_CAPTURE.replace("argr=0x00000064 (100)", "argr=0x00000032 (50)"));
             let mut c = Controller::with_gate(fw, s.clone(), true).unwrap().no_wait();
@@ -151,6 +169,7 @@ mod tests {
                     t += 1_000;
                     c.step(t);
                 } else {
+                    idle_c.store(true, Ordering::SeqCst);
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             }
@@ -159,7 +178,7 @@ mod tests {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let (c, l) = (clock.clone(), lines.clone());
         let answers = Answers::new(shared, Box::new(|| serde_json::Value::Null), Box::new(move || c.load(Ordering::SeqCst))).with_audit(Arc::new(move |m| l.lock().unwrap().push(m)));
-        Rig { answers, clock, lines }
+        Rig { answers, clock, lines, idle }
     }
 
     fn app(pid: u32) -> Client {
@@ -176,10 +195,10 @@ mod tests {
     fn every_write_request_is_one_log_line_with_the_caller() {
         let r = rig();
         let me = app(4242);
-        assert!(matches!(r.answers.answer(&me, profile("0xA1")), Response::ModeChanged { .. }));
-        assert!(matches!(r.answers.answer(&me, Request::SetFanBoost { fan: "0x32".into(), level: 40 }), Response::BoostChanged { .. }));
-        assert!(matches!(r.answers.answer(&me, profile("0xZZ")), Response::Error { .. }));
-        assert!(matches!(r.answers.answer(&me, Request::Snapshot), Response::Snapshot { .. }));
+        assert!(matches!(r.ask(&me, profile("0xA1")), Response::ModeChanged { .. }));
+        assert!(matches!(r.ask(&me, Request::SetFanBoost { fan: "0x32".into(), level: 40 }), Response::BoostChanged { .. }));
+        assert!(matches!(r.ask(&me, profile("0xZZ")), Response::Error { .. }));
+        assert!(matches!(r.ask(&me, Request::Snapshot), Response::Snapshot { .. }));
         let lines = r.lines.lock().unwrap().clone();
         assert_eq!(lines.len(), 3, "{lines:#?}");
         for l in &lines {
@@ -198,20 +217,20 @@ mod tests {
         let (a, b) = (app(100), app(200));
         for i in 0..WRITES_PER_MINUTE as u64 {
             r.clock.store(i * 1_000, Ordering::SeqCst);
-            let resp = r.answers.answer(&a, profile(if i % 2 == 0 { "0xA1" } else { "0xA0" }));
+            let resp = r.ask(&a, profile(if i % 2 == 0 { "0xA1" } else { "0xA0" }));
             assert!(matches!(resp, Response::ModeChanged { .. }), "write {i}: {resp:?}");
         }
         r.clock.store(45_000, Ordering::SeqCst);
-        let Response::Error { message } = r.answers.answer(&a, profile("0xA1")) else { panic!("the 31st write went through") };
+        let Response::Error { message } = r.ask(&a, profile("0xA1")) else { panic!("the 31st write went through") };
         assert!(message.contains("30 changes in the last minute") && message.ends_with("try again in 15 s"), "{message}");
-        assert!(matches!(r.answers.answer(&a, Request::SetFanBoost { fan: "0x32".into(), level: 10 }), Response::Error { .. }), "fan boosts share the budget");
-        assert!(matches!(r.answers.answer(&b, profile("0xA1")), Response::ModeChanged { .. }), "another client is unaffected");
+        assert!(matches!(r.ask(&a, Request::SetFanBoost { fan: "0x32".into(), level: 10 }), Response::Error { .. }), "fan boosts share the budget");
+        assert!(matches!(r.ask(&b, profile("0xA1")), Response::ModeChanged { .. }), "another client is unaffected");
         let same_program_other_pid = app(101);
-        assert!(matches!(r.answers.answer(&same_program_other_pid, profile("0xA0")), Response::ModeChanged { .. }));
+        assert!(matches!(r.ask(&same_program_other_pid, profile("0xA0")), Response::ModeChanged { .. }));
         // The first write (at 0 s) leaves the window at 60 s: one more goes through, the next waits for 61 s.
         r.clock.store(60_000, Ordering::SeqCst);
-        assert!(matches!(r.answers.answer(&a, profile("0xA1")), Response::ModeChanged { .. }), "the budget frees after the minute");
-        let Response::Error { message } = r.answers.answer(&a, profile("0xA0")) else { panic!("only one write had freed") };
+        assert!(matches!(r.ask(&a, profile("0xA1")), Response::ModeChanged { .. }), "the budget frees after the minute");
+        let Response::Error { message } = r.ask(&a, profile("0xA0")) else { panic!("only one write had freed") };
         assert!(message.ends_with("try again in 1 s"), "{message}");
         assert_eq!(r.lines.lock().unwrap().iter().filter(|l| l.contains("outcome=refused: this program asked for 30")).count(), 3, "refusals are logged too");
     }

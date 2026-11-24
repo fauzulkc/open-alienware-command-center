@@ -11,13 +11,14 @@ name = "wiregent-hw-probe"
 path = "src/main.rs"
 
 [dependencies]
+
+
+[target.'cfg(windows)'.dependencies]
 wiregent-oem-alienware = { path = "../oem-alienware" }
-wiregent-hw = { path = "../hw" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-
-[target.'cfg(windows)'.dependencies]
+wiregent-hw = { path = "../hw" }
 windows = { version = "0.62", features = [
   "Win32_Foundation", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Wmi", "Win32_System_Variant",
   "Win32_System_Ole", "Win32_System_Rpc", "Win32_UI_Input", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell",

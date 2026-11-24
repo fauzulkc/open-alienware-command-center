@@ -206,16 +206,8 @@ pub fn should_announce(announced: &mut Vec<(String, u64)>, source: Source, text:
     true
 }
 
-/// The person-facing text of a reader alert.
-pub fn alert_text(a: &Value) -> String {
-    match a["kind"].as_str() {
-        Some("fan-fault") => format!("Fan 0x{:02X} stood still while its sensor was hot and its partner spun: likely a fan fault.", a["fan"].as_u64().unwrap_or(0)),
-        Some("stuck-reading") => format!("Fan 0x{:02X} reports a speed that never changes ({} RPM): its reading isn't a real measurement.", a["fan"].as_u64().unwrap_or(0), a["rpm"].as_u64().unwrap_or(0)),
-        Some("zone-stopped") => format!("Every {} fan reads 0 RPM while it is hot: nothing is cooling it. Ease the load and have the fans checked.", if a["sensor"].as_u64() == Some(6) { "GPU" } else { "CPU" }),
-        Some("sensor-stale") => format!("No valid {} temperature for 30 s or more.", a["name"].as_str().unwrap_or("sensor")),
-        _ => a.to_string(),
-    }
-}
+/// The person-facing text of a reader alert (shared with the command line).
+pub use cockpit_core::readout::alert_text;
 
 #[cfg(test)]
 mod tests {
@@ -230,13 +222,5 @@ mod tests {
         assert!(should_announce(&mut seen, Source::Direct, "b", 2_000), "a different alert");
         assert!(!should_announce(&mut seen, Source::Direct, "a", REANNOUNCE_MS - 1));
         assert!(should_announce(&mut seen, Source::Direct, "a", REANNOUNCE_MS), "a later episode is shown again");
-    }
-
-    #[test]
-    fn alert_texts_match_the_reader_alerts() {
-        assert!(alert_text(&json!({ "kind": "fan-fault", "fan": 59 })).contains("0x3B"));
-        assert!(alert_text(&json!({ "kind": "stuck-reading", "fan": 60, "rpm": 3000 })).contains("3000 RPM"));
-        assert!(alert_text(&json!({ "kind": "sensor-stale", "name": "CPU" })).contains("CPU"));
-        assert!(alert_text(&json!({ "kind": "zone-stopped", "sensor": 1, "fans": [50, 59] })).starts_with("Every CPU fan reads 0 RPM"));
     }
 }

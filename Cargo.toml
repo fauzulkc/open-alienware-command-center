@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 # Alien Cockpit OSS (app/src-tauri) and the Alienware x17 R2 hardware crates (crates/).
-members = ["crates/oem-alienware", "crates/hw", "crates/hw-service", "crates/hw-probe", "crates/alienfx", "app/src-tauri"]
+members = ["crates/oem-alienware", "crates/hw", "crates/hw-service", "crates/hw-probe", "crates/alienfx", "crates/cockpit-core", "crates/cli", "app/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

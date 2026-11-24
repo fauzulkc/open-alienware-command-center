@@ -64,6 +64,40 @@ To see what your unit exposes without changing anything, run the probe from an e
 cargo run -p wiregent-hw-probe -- machine
 ```
 
+## Command line
+
+Everything the app does also runs from a terminal with `cockpit` (crate `crates/cli`), on Windows and
+Linux. It uses the same code as the app: the same safety gates for modes and fans, the same settings
+file and the same daily log. Add `--json` to any command for one JSON document per line.
+
+```
+cargo build -p cockpit-cli --release        # target/release/cockpit(.exe)
+
+cockpit --backend demo status               # the recorded x17 R2 capture, no hardware needed
+cockpit info                                # backend, model, BIOS, verified or not, modes, fans
+cockpit status --watch 2                    # temperatures, fans by zone, mode, alerts; Ctrl+C stops
+cockpit modes
+cockpit mode balanced                       # or quiet, performance, full-speed, battery-saver, g-mode, 0xA0
+cockpit fans
+cockpit fan boost cpu 60                    # a fan id (0x32), cpu, gpu or all; 0 to 100
+cockpit fan reset                           # every fan back on the firmware's own curve
+cockpit guard --trigger 95                  # the emergency fan rule; fans go back on Ctrl+C or after --count N
+cockpit health                              # battery and disk wear, crashes (Windows only)
+cockpit drift                               # Dell's services against your rules (Windows only)
+cockpit lighting probe                      # read-only, also `lighting show` (Windows only)
+cockpit log days                            # also `log read 2026-11-09` and `log cleanup`
+cockpit settings get emergencyC
+cockpit settings set emergencyC=90          # checked like the app's Settings page
+cockpit boost-key target g-mode             # what Fn+F1 would switch to
+cockpit --json status
+```
+
+`--backend` picks where readings come from: `auto` (the hardware service, else the firmware directly from
+an administrator terminal; on Linux the `alienware-wmi` driver), `service`, `direct`, `linux` or `demo`.
+`--config-dir DIR` uses another folder for settings and logs. Exit codes: 0 ok, 1 error, 2 refused by a
+safety gate or not supported on this system. A running app picks up settings changed here when it
+restarts.
+
 ## Status
 
 Early, and tested on one x17 R2. Readings, mode switching and fan boost work on that unit. Reports

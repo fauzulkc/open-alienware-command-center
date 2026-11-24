@@ -6,13 +6,14 @@
 mod autostart;
 mod boostkey;
 mod elevate;
-mod games;
-mod lighting;
-mod log;
 mod processes;
 mod source;
 
-use serde::{Deserialize, Serialize};
+// Settings, the emergency rule as the app runs it, the daily log and the AWCC readers live in cockpit-core,
+// shared with the `cockpit` command line.
+use cockpit_core::{emergency_step, games, hottest, lighting, log, record_switch, route_for, Modes, Raised, EMERGENCY_HOLD};
+pub use cockpit_core::{Effects, Settings, PROFILES};
+
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -21,172 +22,16 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 
-/// The person's choices. Validated on every save; safety limits can only be tightened.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Settings {
-    /// Show the October capture when no live source is available (clearly labelled as demo data).
-    pub demo: bool,
-    /// The emergency fan rule's trigger, °C: 85..=98, never higher.
-    pub emergency_c: i32,
-    /// The mode to return to when G-Mode is toggled off (AWCC's behaviour), as "0xA0".
-    pub default_profile: String,
-    /// "awcc" (toggle G-Mode like AWCC), "cycle" (step through modes).
-    pub boost_key: String,
-    /// Per fan id ("0x32"): curve points [°C, boost %] for the custom profile.
-    pub fan_curves: std::collections::BTreeMap<String, Vec<[i32; 2]>>,
-    /// Per game id: the mode to switch to while it runs.
-    pub game_modes: std::collections::BTreeMap<String, String>,
-    pub notify: bool,
-    /// "dark" (default), "gray" or "light".
-    pub theme: String,
-    /// The daily log: how often, how long, how big.
-    pub log: log::LogSettings,
-    /// Look and feel: each can be turned off.
-    pub effects: Effects,
-    /// Without the hardware service, restart as administrator at start (one UAC prompt) for live readings.
-    pub live_admin: bool,
-    /// Start in the tray at sign-in, as administrator without a prompt (a Task Scheduler task). Off by default.
-    pub autostart: bool,
-}
-
-/// Interface effects, each on its own switch (Settings → Appearance).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Effects {
-    /// Retired 2026-11-09 (the owner asked for no pointer-driven movement); kept so old settings files load.
-    pub motion: bool,
-    /// A colour change on controls under the pointer; nothing moves or glows.
-    pub hover: bool,
-    /// A press and ripple when clicking.
-    pub press: bool,
-    /// Larger text throughout.
-    pub large_text: bool,
-}
-
-impl Default for Effects {
-    fn default() -> Self {
-        Effects { motion: false, hover: true, press: true, large_text: true }
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings { demo: false, emergency_c: 98, default_profile: "0xA0".into(), boost_key: "awcc".into(), fan_curves: Default::default(), game_modes: Default::default(), notify: true, theme: "dark".into(), log: log::LogSettings::default(), effects: Effects::default(), live_admin: true, autostart: false }
-    }
-}
-
-pub const PROFILES: &[&str] = &["0xA3", "0xA0", "0xA1", "0xA4", "0xA5", "0xAB"];
-
-impl Settings {
-    pub fn validate(&self) -> Result<(), String> {
-        if !(85..=98).contains(&self.emergency_c) {
-            return Err("the emergency trigger must be 85–98 °C".into());
-        }
-        if !PROFILES.contains(&self.default_profile.as_str()) || self.default_profile == "0xAB" {
-            return Err("the default mode must be one of Quiet, Balanced, Performance, Full Speed or Battery Saver".into());
-        }
-        if !["awcc", "cycle"].contains(&self.boost_key.as_str()) {
-            return Err("unknown boost-key behaviour".into());
-        }
-        for (fan, pts) in &self.fan_curves {
-            if !fan.starts_with("0x") || pts.len() < 2 || pts.len() > 8 {
-                return Err(format!("fan {fan}: a curve has 2–8 points"));
-            }
-            if pts.windows(2).any(|w| w[1][0] <= w[0][0]) || pts.iter().any(|p| !(20..=105).contains(&p[0]) || !(0..=100).contains(&p[1])) {
-                return Err(format!("fan {fan}: points must rise in temperature (20–105 °C) with boost 0–100 %"));
-            }
-        }
-        self.log.validate()?;
-        if !["dark", "gray", "light"].contains(&self.theme.as_str()) {
-            return Err("the theme must be dark, gray or light".into());
-        }
-        if self.game_modes.values().any(|m| !PROFILES.contains(&m.as_str())) {
-            return Err("a game is set to an unknown mode".into());
-        }
-        Ok(())
-    }
-
-    fn path() -> std::path::PathBuf {
-        dirs::config_dir().unwrap_or_default().join("Alien Cockpit OSS").join("settings.json")
-    }
-
-    pub fn load() -> Self {
-        Self::load_from(&Self::path())
-    }
-
-    /// Missing, unreadable or invalid files give the defaults (the safe ones); fields this version doesn't
-    /// know are ignored and missing ones take their defaults, so older and newer files still load.
-    pub fn load_from(p: &std::path::Path) -> Self {
-        std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Settings>(&t).ok()).filter(|s| s.validate().is_ok()).unwrap_or_default()
-    }
-
-    fn save(&self) -> Result<(), String> {
-        self.save_to(&Self::path())
-    }
-
-    /// Written to a temporary file and renamed over the old one, so a crash mid-save can't leave half a file
-    /// (which would load as defaults and lose every choice).
-    pub fn save_to(&self, p: &std::path::Path) -> Result<(), String> {
-        std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
-        let tmp = p.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self).unwrap()).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, p).map_err(|e| e.to_string())
-    }
-}
-
-/// The last mode change, and the mode G-Mode was switched on from (the boost key goes back to it).
-#[derive(Default)]
-pub struct Modes {
-    previous: Option<u8>,
-    limit: wiregent_oem_alienware::rules::RateLimit,
-    last: Option<Value>,
-    started: Option<Instant>,
-    /// Fans this app raised, and to what (so it can put them back when it quits).
-    boosted: std::collections::BTreeMap<u8, u8>,
-    /// The emergency rule, in direct mode (the hardware service runs its own).
-    emergency: Option<wiregent_oem_alienware::rules::EmergencyRule>,
-}
-
-impl Modes {
-    fn emergency_active(&self) -> bool {
-        self.emergency.as_ref().is_some_and(|r| r.active())
-    }
-}
-
-/// One reading into the emergency rule. The rule is rebuilt when the person changes the trigger, but never
-/// while it is engaged: changing the setting mid-emergency must not hand the fans back early.
-pub fn emergency_step(m: &mut Modes, trigger_c: i32, t_ms: u64, hottest: Option<i32>) -> Option<wiregent_oem_alienware::rules::Emergency> {
-    use wiregent_oem_alienware::rules::{EmergencyRule, EMERGENCY_MAX_C};
-    let wanted = trigger_c.min(EMERGENCY_MAX_C);
-    if m.emergency.as_ref().is_none_or(|r| r.trigger_c() != wanted && !r.active()) {
-        m.emergency = Some(EmergencyRule::new(wanted));
-    }
-    hottest.and_then(|h| m.emergency.as_mut().unwrap().push(t_ms, h))
-}
-
-/// The hottest valid sensor in a reader snapshot.
-fn hottest(snapshot: &Value) -> Option<i32> {
-    snapshot["sensors"].as_array()?.iter().filter_map(|s| s["celsius"].as_i64()).max().map(|c| c as i32)
-}
-
 /// Carries out an emergency decision in direct mode and says so (always, whatever the notification
 /// setting: this is the one message that must reach the person).
 fn run_emergency(app: &AppHandle, e: wiregent_oem_alienware::rules::Emergency, person: &std::collections::BTreeMap<u8, u8>, hot: Option<i32>, release_c: i32) {
-    use wiregent_oem_alienware::rules::Emergency;
     let errors = (|| -> Result<Vec<String>, String> {
         let fw = wiregent_hw::wmi::Awcc::open().map_err(|e| format!("{e:#}"))?;
         let d = wiregent_oem_alienware::Discovery::run(|c| wiregent_hw::Firmware::read(&fw, c).ok()).map_err(|e| e.to_string())?;
         Ok(wiregent_hw::control::apply_emergency(&fw, &d, e, person, wiregent_hw::control::this_machine_verified()))
     })()
     .unwrap_or_else(|e| vec![e]);
-    let mut text = match e {
-        Emergency::Engage => format!("{} °C for 5 seconds: every fan is at full until the laptop cools to {release_c} °C.", hot.unwrap_or_default()),
-        Emergency::Release => "Cooled down: the fans are back to your setting.".to_string(),
-    };
-    if !errors.is_empty() {
-        text = format!("{text} Some fans didn't take it: {}", errors.join("; "));
-    }
+    let text = cockpit_core::readout::emergency_text(e, hot, release_c, &errors);
     let _ = app.notification().builder().title("Alien Cockpit OSS: emergency fan rule").body(&text).show();
 }
 
@@ -305,23 +150,6 @@ fn mode_route() -> Result<&'static str, String> {
     route_for(wiregent_hw::client::service_present(), wiregent_hw::is_admin())
 }
 
-/// The service is the single writer when it runs; otherwise this app writes itself if it's elevated.
-pub fn route_for(service: bool, admin: bool) -> Result<&'static str, String> {
-    match (service, admin) {
-        (true, _) => Ok("service"),
-        (false, true) => Ok("direct"),
-        (false, false) => Err("Switching modes needs the hardware service, or Alien Cockpit started as administrator.".into()),
-    }
-}
-
-/// Records a finished switch: the mode G-Mode was entered from (the boost key goes back to it), and the result.
-fn record_switch(m: &mut Modes, current: Option<u8>, profile: u8, change: &Value) {
-    if profile == wiregent_oem_alienware::GMODE && current != Some(wiregent_oem_alienware::GMODE) {
-        m.previous = current;
-    }
-    m.last = Some(change.clone());
-}
-
 /// Switches the thermal mode: through the service's single writer, or directly when this app is elevated.
 /// Remembers the mode G-Mode was switched on from, for the boost key.
 pub fn switch_mode(modes: &Mutex<Modes>, readings: &source::Shared, profile: u8) -> Result<Value, String> {
@@ -356,8 +184,6 @@ async fn set_mode(app: State<'_, App>, profile: String) -> Result<Value, String>
     let (modes, readings) = (app.modes.clone(), app.readings.clone());
     tauri::async_runtime::spawn_blocking(move || switch_mode(&modes, &readings, p)).await.map_err(|e| e.to_string())?
 }
-
-pub const EMERGENCY_HOLD: &str = "The emergency rule has every fan at full until the laptop cools down; fan changes wait until then.";
 
 /// Raises (or resets) one fan's boost, through the service or directly (as with modes). Held back while the
 /// emergency rule has the fans.
@@ -397,57 +223,10 @@ fn write_fan_boost(modes: &Mutex<Modes>, fan: u8, level: u8) -> Result<Value, St
     Ok(change)
 }
 
-/// What this app has raised, kept on disk while anything is raised, so a crash or a kill can't leave fans
-/// raised for good: the next start puts them back (see `recover_raised`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct Raised {
-    pub fans: std::collections::BTreeMap<u8, u8>,
-    /// The emergency rule had every fan at full.
-    pub emergency: bool,
-}
-
-impl Raised {
-    fn path() -> std::path::PathBuf {
-        dirs::config_dir().unwrap_or_default().join("Alien Cockpit OSS").join("raised.json")
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.fans.is_empty() && !self.emergency
-    }
-
-    /// Written while something is raised; removed when nothing is.
-    pub fn save_to(&self, p: &std::path::Path) -> std::io::Result<()> {
-        if self.is_empty() {
-            return match std::fs::remove_file(p) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-                _ => Ok(()),
-            };
-        }
-        std::fs::create_dir_all(p.parent().unwrap())?;
-        let tmp = p.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(self).unwrap())?;
-        std::fs::rename(&tmp, p)
-    }
-
-    pub fn load_from(p: &std::path::Path) -> Option<Raised> {
-        std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Raised>(&t).ok()).filter(|r| !r.is_empty())
-    }
-}
-
-impl Modes {
-    fn raised(&self) -> Raised {
-        Raised { fans: self.boosted.clone(), emergency: self.emergency_active() }
-    }
-
-    fn persist(&self) {
-        let _ = self.raised().save_to(&Raised::path());
-    }
-}
-
 /// At start: fans a previous run raised and never put back (it crashed or was killed) go back to the
 /// firmware's curve. The emergency rule re-engages within 5 s if it's still needed. Returns what was done.
 fn recover_raised(modes: &Mutex<Modes>) -> Option<String> {
-    let left = Raised::load_from(&Raised::path())?;
+    let left = Raised::load_from(&Raised::default_path())?;
     let errors: Vec<String> = if left.emergency && mode_route() == Ok("direct") {
         (|| -> Result<Vec<String>, String> {
             let fw = wiregent_hw::wmi::Awcc::open().map_err(|e| format!("{e:#}"))?;
@@ -459,7 +238,7 @@ fn recover_raised(modes: &Mutex<Modes>) -> Option<String> {
         left.fans.keys().filter_map(|f| write_fan_boost(modes, *f, 0).err()).collect()
     };
     if errors.is_empty() {
-        let _ = Raised::default().save_to(&Raised::path());
+        let _ = Raised::default().save_to(&Raised::default_path());
         Some("Fans raised before Alien Cockpit last stopped unexpectedly are back on the firmware's own curve.".into())
     } else {
         Some(format!("Fans raised before Alien Cockpit last stopped unexpectedly couldn't all be put back: {}", errors.join("; ")))
@@ -496,7 +275,7 @@ fn reset_boost(modes: &Mutex<Modes>) {
 /// On quit, after `reset_boost`: nothing is raised any more, whatever the emergency rule's last state was.
 fn forget_raised(modes: &Mutex<Modes>) {
     if modes.lock().unwrap().boosted.is_empty() {
-        let _ = Raised::default().save_to(&Raised::path());
+        let _ = Raised::default().save_to(&Raised::default_path());
     }
 }
 
@@ -769,54 +548,6 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    #[test]
-    fn settings_refuse_unsafe_or_unknown_values() {
-        let ok = Settings::default();
-        assert!(ok.validate().is_ok());
-        let bad = |f: &dyn Fn(&mut Settings)| {
-            let mut s = Settings::default();
-            f(&mut s);
-            s.validate().is_err()
-        };
-        assert!(bad(&|s| s.emergency_c = 99), "can't raise the emergency trigger past 98 °C");
-        assert!(bad(&|s| s.emergency_c = 70));
-        assert!(bad(&|s| s.default_profile = "0xAB".into()), "G-Mode isn't a resting mode");
-        assert!(bad(&|s| s.default_profile = "0xA2".into()));
-        assert!(bad(&|s| s.boost_key = "macro".into()));
-        assert!(bad(&|s| { s.fan_curves.insert("0x32".into(), vec![[60, 20], [50, 40]]); }), "falling temperature");
-        assert!(bad(&|s| { s.fan_curves.insert("0x32".into(), vec![[60, 20], [80, 140]]); }), "boost over 100 %");
-        assert!(bad(&|s| { s.game_modes.insert("g".into(), "0x99".into()); }));
-        assert!(bad(&|s| s.theme = "neon".into()));
-        assert_eq!(Settings::default().theme, "dark", "dark by default");
-        let mut good = Settings::default();
-        good.fan_curves.insert("0x32".into(), vec![[50, 0], [70, 40], [90, 100]]);
-        good.game_modes.insert("warframe".into(), "0xA1".into());
-        assert!(good.validate().is_ok());
-    }
-
-    use wiregent_oem_alienware::rules::Emergency;
-
-    #[test]
-    fn settings_round_trip_and_fall_back_to_safe_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("sub").join("settings.json");
-        assert_eq!(Settings::load_from(&p), Settings::default(), "missing file");
-        let mut s = Settings::default();
-        s.emergency_c = 90;
-        s.default_profile = "0xA1".into();
-        s.game_modes.insert("warframe".into(), "0xAB".into());
-        s.save_to(&p).unwrap();
-        assert_eq!(Settings::load_from(&p), s, "round trip");
-        assert!(!p.with_extension("json.tmp").exists(), "no temporary file left behind");
-        std::fs::write(&p, b"{ not json").unwrap();
-        assert_eq!(Settings::load_from(&p), Settings::default(), "corrupt file");
-        std::fs::write(&p, br#"{ "emergencyC": 120 }"#).unwrap();
-        assert_eq!(Settings::load_from(&p), Settings::default(), "an unsafe trigger is never loaded");
-        std::fs::write(&p, br#"{ "emergencyC": 88, "someFutureSetting": true }"#).unwrap();
-        let l = Settings::load_from(&p);
-        assert_eq!((l.emergency_c, l.theme.as_str()), (88, "dark"), "unknown fields ignored, missing ones defaulted");
-    }
-
     /// The window's poll asks only for points it doesn't have yet.
     #[test]
     fn history_is_sent_incrementally() {
@@ -825,96 +556,6 @@ mod tests {
         assert_eq!(points_after(&h, None).len(), 3, "the first poll gets everything");
         assert_eq!(points_after(&h, Some(2_600)).iter().map(|x| x.t).collect::<Vec<_>>(), vec![4_200]);
         assert!(points_after(&h, Some(4_200)).is_empty(), "nothing new");
-    }
-
-    /// The record of raised fans exists exactly while something is raised, so a crash leaves it behind and a
-    /// clean quit doesn't.
-    #[test]
-    fn raised_fans_are_recorded_while_raised_and_forgotten_after() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("raised.json");
-        assert_eq!(Raised::load_from(&p), None);
-        let r = Raised { fans: [(0x33u8, 60u8)].into_iter().collect(), emergency: false };
-        r.save_to(&p).unwrap();
-        assert_eq!(Raised::load_from(&p), Some(r));
-        let e = Raised { fans: Default::default(), emergency: true };
-        e.save_to(&p).unwrap();
-        assert_eq!(Raised::load_from(&p), Some(e), "the emergency alone is worth remembering");
-        Raised::default().save_to(&p).unwrap();
-        assert!(!p.exists(), "nothing raised: no record");
-        Raised::default().save_to(&p).unwrap();
-        std::fs::write(&p, b"garbage").unwrap();
-        assert_eq!(Raised::load_from(&p), None, "an unreadable record is ignored");
-    }
-
-    #[test]
-    fn modes_know_what_they_raised() {
-        let mut m = Modes::default();
-        m.boosted.insert(0x32, 40);
-        for i in 0..=5 {
-            emergency_step(&mut m, 98, i * 1_000, Some(99));
-        }
-        assert_eq!(m.raised(), Raised { fans: [(0x32u8, 40u8)].into_iter().collect(), emergency: true });
-    }
-
-    #[test]
-    fn writes_go_through_the_service_first_then_direct_when_elevated() {
-        assert_eq!(route_for(true, false), Ok("service"));
-        assert_eq!(route_for(true, true), Ok("service"), "the service is the single writer when it runs");
-        assert_eq!(route_for(false, true), Ok("direct"));
-        assert!(route_for(false, false).unwrap_err().contains("administrator"));
-    }
-
-    /// The boost key returns to the mode G-Mode was entered from; switching G-Mode on again from G-Mode, or
-    /// leaving it, doesn't overwrite that.
-    #[test]
-    fn the_mode_before_g_mode_is_remembered() {
-        let mut m = Modes::default();
-        record_switch(&mut m, Some(0xA1), 0xAB, &json!({ "after": "G-Mode" }));
-        assert_eq!(m.previous, Some(0xA1));
-        record_switch(&mut m, Some(0xAB), 0xAB, &json!({}));
-        assert_eq!(m.previous, Some(0xA1));
-        record_switch(&mut m, Some(0xAB), 0xA3, &json!({ "after": "Quiet" }));
-        assert_eq!(m.previous, Some(0xA1));
-        assert_eq!(m.last, Some(json!({ "after": "Quiet" })));
-        record_switch(&mut m, Some(0xA3), 0xAB, &json!({}));
-        assert_eq!(m.previous, Some(0xA3));
-    }
-
-    /// The rule as the app runs it: 5 s at the trigger engages, 30 s at or under trigger − 6 releases, and no
-    /// reading moves nothing.
-    #[test]
-    fn the_emergency_rule_engages_and_releases_in_the_app() {
-        let mut m = Modes::default();
-        let got: Vec<_> = (0..=5).map(|i| emergency_step(&mut m, 98, i * 1_000, Some(99))).collect();
-        assert_eq!(got.last(), Some(&Some(Emergency::Engage)));
-        assert!(got[..5].iter().all(Option::is_none));
-        assert!(m.emergency_active());
-        assert_eq!(emergency_step(&mut m, 98, 6_000, None), None, "no reading: no decision");
-        assert_eq!(emergency_step(&mut m, 98, 7_000, Some(92)), None);
-        assert_eq!(emergency_step(&mut m, 98, 37_000, Some(92)), Some(Emergency::Release));
-        assert!(!m.emergency_active());
-    }
-
-    /// A trigger changed in Settings takes effect, but never releases the fans mid-emergency.
-    #[test]
-    fn a_changed_trigger_applies_but_not_mid_emergency() {
-        let mut m = Modes::default();
-        for i in 0..=5 {
-            emergency_step(&mut m, 90, i * 1_000, Some(91));
-        }
-        assert!(m.emergency_active(), "a lowered trigger (90) engages at 91 °C");
-        assert_eq!(emergency_step(&mut m, 98, 6_000, Some(91)), None);
-        assert!(m.emergency_active(), "raising the trigger while engaged doesn't drop the rule");
-        assert_eq!(m.emergency.as_ref().unwrap().trigger_c(), 90);
-        for i in 7..=40 {
-            emergency_step(&mut m, 98, i * 1_000, Some(80));
-        }
-        assert!(!m.emergency_active());
-        emergency_step(&mut m, 98, 41_000, Some(80));
-        assert_eq!(m.emergency.as_ref().unwrap().trigger_c(), 98, "rebuilt with the new trigger once released");
-        assert_eq!(emergency_step(&mut m, 120, 42_000, Some(80)), None);
-        assert_eq!(m.emergency.as_ref().unwrap().trigger_c(), 98, "never above 98 °C");
     }
 
     /// While engaged, the person's fan changes are held back before anything reaches the firmware.
@@ -926,13 +567,6 @@ mod tests {
         }
         assert_eq!(switch_fan_boost(&modes, 0x32, 0), Err(EMERGENCY_HOLD.to_string()));
         assert!(modes.lock().unwrap().boosted.is_empty());
-    }
-
-    #[test]
-    fn the_hottest_sensor_is_found_in_a_snapshot() {
-        assert_eq!(hottest(&json!({ "sensors": [{ "celsius": 63 }, { "celsius": null }, { "celsius": 100 }] })), Some(100));
-        assert_eq!(hottest(&json!({ "sensors": [{ "celsius": null }] })), None);
-        assert_eq!(hottest(&Value::Null), None);
     }
 
     #[test]

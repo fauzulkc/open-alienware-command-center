@@ -1,8 +1,8 @@
-//! The game library: AWCC's own library file (it already found your games), read-only.
+//! The game library: AWCC's own library file (it already found your games), read-only. The file is
+//! Windows only; the parser runs anywhere.
 
 use serde::Serialize;
 use serde_json::Value;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Game {
@@ -13,8 +13,9 @@ pub struct Game {
     pub genre: Option<String>,
 }
 
-pub fn awcc_library() -> PathBuf {
-    PathBuf::from(r"C:\ProgramData\Alienware\Alienware Command Center\GameLibrary\GameLibrary.json")
+#[cfg(windows)]
+pub fn awcc_library() -> std::path::PathBuf {
+    std::path::PathBuf::from(r"C:\ProgramData\Alienware\Alienware Command Center\GameLibrary\GameLibrary.json")
 }
 
 pub fn parse(text: &str) -> Vec<Game> {
@@ -32,6 +33,7 @@ pub fn parse(text: &str) -> Vec<Game> {
     games
 }
 
+#[cfg(windows)]
 pub fn read() -> Vec<Game> {
     std::fs::read_to_string(awcc_library()).map(|t| parse(&t)).unwrap_or_default()
 }
@@ -47,7 +49,7 @@ mod tests {
 }
 
 /// Reads the real AWCC game library on this machine. Run with `-- --ignored`.
-#[cfg(test)]
+#[cfg(all(test, windows))]
 #[test]
 #[ignore]
 fn reads_this_machines_game_library() {

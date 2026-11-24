@@ -1,10 +1,9 @@
 //! Your current lighting, read from AWCC's own database (a copy, read-only). Best effort until shown on the
 //! keyboard: AWCC's LED ids aren't HID indices, and what the colour's alpha byte means is unconfirmed.
+//! Reading the database is Windows only (AWCC's file, rusqlite); the preset parser runs anywhere.
 
-use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Group {
@@ -24,7 +23,8 @@ pub struct Device {
     pub power_states: Vec<String>,
 }
 
-pub fn awcc_db() -> PathBuf {
+#[cfg(windows)]
+pub fn awcc_db() -> std::path::PathBuf {
     dirs::data_local_dir().unwrap_or_default().join(r"Alienware\Alienware Command Center\FX\FXRepository.db")
 }
 
@@ -51,7 +51,9 @@ pub fn parse_preset(data: &Value) -> (Vec<Group>, Vec<String>) {
 }
 
 /// Reads the active presets from a copy of the database, so AWCC's own file is never opened for writing.
-pub fn read(db: &Path) -> Result<Vec<Device>> {
+#[cfg(windows)]
+pub fn read(db: &std::path::Path) -> anyhow::Result<Vec<Device>> {
+    use anyhow::{Context, Result};
     let tmp = std::env::temp_dir().join(format!("alien-cockpit-fx-{}.db", std::process::id()));
     std::fs::copy(db, &tmp).with_context(|| format!("copying {}", db.display()))?;
     let out = (|| -> Result<Vec<Device>> {
@@ -99,7 +101,7 @@ mod tests {
 }
 
 /// Reads the real AWCC database on this machine (read-only copy). Run with `-- --ignored`.
-#[cfg(test)]
+#[cfg(all(test, windows))]
 #[test]
 #[ignore]
 fn reads_this_machines_awcc_lighting() {

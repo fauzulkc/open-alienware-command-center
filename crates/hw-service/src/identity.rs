@@ -31,12 +31,19 @@ fn under(path: &Path, dir: &Path) -> bool {
     p.starts_with(d) && p[d.len()..].starts_with(['\\', '/'])
 }
 
+/// A program's file name from its full path, splitting at `\` and `/` alike: Windows reports image paths with
+/// `\`, and `Path::file_name` only splits at `/` when this code runs (or is tested) on Linux.
+pub fn image_name(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy();
+    s.rsplit(['\\', '/']).next().unwrap_or_default().to_string()
+}
+
 impl Policy {
     pub fn allow(&self, c: &Client) -> Result<(), String> {
         if !c.sid.eq_ignore_ascii_case(&self.owner_sid) {
             return Err(format!("process {} runs as {}, not as the owner who installed the service", c.pid, c.sid));
         }
-        let name = c.image.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let name = image_name(&c.image).to_ascii_lowercase();
         if !self.images.iter().any(|i| i.eq_ignore_ascii_case(&name)) {
             return Err(format!("{} isn't a Wiregent program", c.image.display()));
         }
@@ -72,6 +79,8 @@ mod tests {
 
     #[test]
     fn only_the_owners_wiregent_programs_in_wiregents_folders() {
+        assert_eq!(image_name(std::path::Path::new(r"C:\Program Files\Wiregent\hw\wiregent-hwkey.exe")), "wiregent-hwkey.exe", "on every OS");
+        assert_eq!(image_name(std::path::Path::new("/usr/local/bin/wiregent-hw")), "wiregent-hw");
         let p = policy();
         assert!(p.allow(&client(r"C:\Users\owner\AppData\Local\Programs\Wiregent\Wiregent.exe", OWNER)).is_ok());
         assert!(p.allow(&client(r"C:\Program Files\Wiregent\hw\wiregent-hwkey.exe", OWNER)).is_ok());
