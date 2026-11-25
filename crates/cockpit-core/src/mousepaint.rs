@@ -255,16 +255,14 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
                             None => continue,
                         },
                     };
+                    // A move paints; a still pointer only updates the colour of a key still fading (the
+                    // screen under it may change), so the last key fades like the rest of the trail.
                     match paint.iter_mut().find(|(k, _, _)| *k == id) {
-                        Some(slot) => *slot = (id, c, now),
-                        None => paint.push((id, c, now)),
+                        Some(slot) => *slot = (id, c, if moved { now } else { slot.2 }),
+                        None if moved => paint.push((id, c, now)),
+                        None => {}
                     }
                 }
-            }
-            // The key under the pointer stays fully lit until the pointer leaves it (between colour reads too,
-            // or it would pulse).
-            if let Some(slot) = key_at(here.0, here.1).and_then(|id| paint.iter_mut().find(|(k, _, _)| *k == id)) {
-                slot.2 = now;
             }
             last = Some((pos, here));
         }

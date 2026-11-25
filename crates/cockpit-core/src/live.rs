@@ -657,15 +657,14 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
                                 None => continue,
                             },
                         };
+                        // A move paints; a still pointer only updates the colour of a key still fading, so the
+                        // last key fades like the rest of the trail (the owner, 2026-11-25).
                         match paint.iter_mut().find(|(k, _, _)| *k == id) {
-                            Some(slot) => *slot = (id, c, now),
-                            None => paint.push((id, c, now)),
+                            Some(slot) => *slot = (id, c, if moved { now } else { slot.2 }),
+                            None if moved => paint.push((id, c, now)),
+                            None => {}
                         }
                     }
-                }
-                // The key under the pointer stays fully lit until the pointer leaves it.
-                if let Some(slot) = mousepaint::key_at(here.0, here.1).and_then(|id| paint.iter_mut().find(|(k, _, _)| *k == id)) {
-                    slot.2 = now;
                 }
                 last = Some((pos, here));
             }
@@ -980,6 +979,37 @@ mod tests {
         assert!(sum.frames > 10 && sum.frames <= 12 * 8, "writes while beams and the trail move, at most 12 a second: {}", sum.frames);
         assert!(sum.keys / sum.frames.max(1) <= 30, "a few keys a write: {} keys in {} writes", sum.keys, sum.frames);
         assert_eq!(pz.paused(), pz.resumed());
+    }
+
+    /// A pointer that never moves.
+    struct Rest;
+    impl PointerSource for Rest {
+        fn screen(&mut self) -> Screen {
+            Screen { x: 0, y: 0, w: 1600, h: 600 }
+        }
+        fn position(&mut self) -> Option<(i32, i32)> {
+            Some((800, 300))
+        }
+        fn color_at(&mut self, _x: i32, _y: i32) -> Option<Rgb> {
+            Some(Rgb::new(255, 0, 0))
+        }
+    }
+
+    #[test]
+    fn the_key_under_a_resting_pointer_fades_like_the_trail() {
+        for mouse in ["glow", "screen"] {
+            let mut s = custom();
+            s.live.mouse = mouse.into();
+            s.live.fade_ms = 1_000;
+            let p = PowerState::default();
+            let plan = plan(&s, &p).unwrap();
+            let mut ptr = Rest;
+            let mut time = || Hms { h: 9, m: 0, s: 0 };
+            let src = Sources { time: &mut time, pointer: Some(&mut ptr), screen: None, keys: None };
+            let sum = run(&mut FakeIo::default(), &s, &p, Shown::of(&s, &p), None, plan, &mut Sim(0, FakePauser::default()), src, &mut |now| now >= 5_000).unwrap();
+            // Lit at once, then fading over the second (about 10 writes at 10 a second), then nothing more.
+            assert!(sum.frames >= 5 && sum.frames <= 13, "{mouse}: the resting key fades and stops: {} writes", sum.frames);
+        }
     }
 
     #[test]

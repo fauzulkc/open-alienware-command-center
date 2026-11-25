@@ -140,9 +140,10 @@ built-in effects only), so the clock is driven from the PC, one change a second.
 
 The whole screen (Windows' virtual screen, in real pixels: 3840 x 2160 on the owner's laptop) maps onto the
 keyboard's 16 x 6 key grid, top-left = Esc, bottom-right = Right Arrow (the space bar has no light). The key
-under the mouse pointer lights up and stays lit while the pointer is on it; when the pointer leaves, it fades
-back over `--fade-ms` (default 2 s, eased so it dims quickly then lingers). Keys between two pointer readings
-are lit too, so a fast swipe leaves no gaps.
+under the mouse pointer lights up when the pointer moves onto it and fades back over `--fade-ms` (default 2 s,
+eased so it dims quickly then lingers), the last one too while the pointer rests (the owner, 2026-11-25: "the
+final position should decay just like the trail"). Keys between two pointer readings are lit too, so a fast
+swipe leaves no gaps.
 
 - Looks (`--look`): `glow` (default: the saved colours stay, the mouse lights keys white), `uncover` (white
   keyboard, the mouse shows each key's own colour), `reveal` (dark keyboard, the mouse brings each key's own
