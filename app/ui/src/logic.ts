@@ -250,6 +250,17 @@ export const MOUSE_MODES: { id: MouseMode; name: string; what: string }[] = [
   { id: 'boost', name: 'Boost', what: 'Your colours dimmed; the pointer brings keys to full brightness. Over the clock or mirror it brings your colours through.' },
 ];
 
+/** A bar's fill for `pct` used (the owner, 2026-11-25: "more red, less white; more utilization = better =
+ * pinkish flame red"): a pale rose at nothing (40 % of the theme's red over `--bar-low`), the theme's red at
+ * 60 %, then on to a pinkish flame red (`--flame`) at 100 %. */
+export function usedColour(pct: number): string {
+  const p = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));
+  if (p <= 60) return `color-mix(in oklab, var(--hue-red-mark) ${Math.round(40 + p)}%, var(--bar-low))`;
+  return `color-mix(in oklab, var(--flame) ${Math.round(((p - 60) / 40) * 100)}%, var(--hue-red-mark))`;
+}
+/** High use glows a little (75 % and up). */
+export const usedGlow = (pct: number) => (pct >= 75 ? `0 0 8px color-mix(in oklab, var(--flame) 55%, transparent)` : 'none');
+
 /** The key-press effects, worded plainly. */
 export const TAP_KINDS: { id: TapKind; name: string; what: string }[] = [
   { id: 'laser', name: 'Laser', what: 'A beam runs out both ways along the row from the key you press.' },

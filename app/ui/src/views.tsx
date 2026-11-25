@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { api, hex, PROFILE_NAMES, sensorName, type BoostChange, type Controls, type Drift, type Fan, type Health, type LogDay, type ModeChange, type Point, type Proc, type Settings, type Status } from './api';
+import { api, hex, PROFILE_NAMES, sensorName, type BoostChange, type Clocks, type Controls, type Drift, type Fan, type Health, type LogDay, type ModeChange, type Point, type Proc, type Settings, type Status } from './api';
 import { Chart, CurveEditor, FanRotor, Gauge, LoadChart, LockedWhy, ModeDock, Section, Tip, type LoadSeries } from './components';
 import { Duty, FanResponse, SpeedAndTemp } from './fangraphs';
-import { alertText, fanFlag, stuckFans, verdict, zoneName } from './logic';
+import { alertText, fanFlag, stuckFans, usedColour, usedGlow, verdict, zoneName } from './logic';
 
 /** Power and what it powers, on one time axis: each on its own scale. */
 function loadSeries(h: Point[]): LoadSeries[] {
@@ -18,6 +18,123 @@ function loadSeries(h: Point[]): LoadSeries[] {
 const COL = { cpu: 'var(--hue-red-mark)', gpu: 'var(--hue-purple-mark)', power: 'var(--hue-amber-mark)', ram: 'var(--hue-sage-mark)', fans: ['var(--ink)', 'var(--hue-purple-mark)', 'var(--hue-red-mark)', 'var(--hue-sage-mark)'] };
 
 const sensorC = (s: Status | null, name: string) => s?.snapshot?.sensors.find((x) => x.name === name)?.celsius ?? null;
+
+/** The CPU and GPU clocks, read once a second while the page using this is open (and only then: reading the
+ * NVIDIA GPU can wake it from sleep). */
+function useClocks(): Clocks | null {
+  const [c, setC] = useState<Clocks | null>(null);
+  useEffect(() => {
+    let live = true;
+    const tick = () => api.clocks(true).then((v) => { if (live) setC(v); }, () => {});
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => { live = false; clearInterval(id); };
+  }, []);
+  return c;
+}
+
+const ghz = (mhz: number | null | undefined) => (mhz == null ? '—' : `${(mhz / 1000).toFixed(2)} GHz`);
+const mhzText = (mhz: number | null | undefined) => (mhz == null ? '—' : `${Math.round(mhz)} MHz`);
+
+/** One clock as a bar against `of`, coloured by how much of it is used. */
+function ClockBar({ label, mhz, of, note, hint }: { label: string; mhz: number | null; of: number; note?: string; hint?: string }) {
+  const pct = mhz == null || of <= 0 ? 0 : Math.min(100, (mhz / of) * 100);
+  return (
+    <div className="clk-row" title={hint}>
+      <span className="clk-lbl">{label}</span>
+      <span className="clk-bar"><i style={{ width: `${pct}%`, background: usedColour(pct), boxShadow: usedGlow(pct) }} /></span>
+      <b className="mono">{note ?? ghz(mhz)}</b>
+    </div>
+  );
+}
+
+const watts = (w: number | null | undefined) => (w == null ? '—' : `${w.toFixed(1)} W`);
+
+/** Where the power goes: each measured part as its share of the total, the input against the output. */
+function PowerPanel({ c }: { c: Clocks | null }) {
+  const p = c?.power;
+  if (!p) return <p className="muted small">{c ? 'No power readings.' : 'Reading…'}</p>;
+  const total = p.inputW ?? p.measuredW;
+  const row = (label: string, w: number | null, hint: string, note?: string, sub = false) => w == null ? null : (
+    <div className={`clk-row pw-row ${sub ? 'pw-sub' : ''}`} title={hint}>
+      <span className="clk-lbl">{label}</span>
+      <span className="clk-bar"><i style={{ width: `${total > 0 ? Math.min(100, (w / total) * 100) : 0}%`, background: usedColour(total > 0 ? (w / total) * 100 : 0), boxShadow: usedGlow(total > 0 ? (w / total) * 100 : 0) }} /></span>
+      <b className="mono">{watts(w)}{note && <small className="muted"> {note}</small>}</b>
+    </div>
+  );
+  const b = p.battery;
+  return (
+    <div className="clk-grid">
+      <div>
+        <div className="clk-head">
+          <span className="lbl">In</span>
+          {p.inputW != null
+            ? <span><b className="mono">{watts(p.inputW)}</b> <small className="muted">from the battery</small></span>
+            : <span><b className="mono">{b?.onAc ? 'AC' : '—'}</b> <small className="muted">{b?.onAc ? 'the adapter\'s power isn\'t reported by Windows' : 'no battery reading'}</small></span>}
+          <span className="lbl">Out</span>
+          <span><b className="mono">{watts(p.outputW ?? p.measuredW)}</b> <small className="muted">{p.outputW != null ? 'the whole laptop' : 'measured parts'}</small></span>
+        </div>
+        {row('CPU', p.cpuPackageW, 'The whole CPU package, from its own energy meter.', total > 0 && p.cpuPackageW != null ? `${Math.round((p.cpuPackageW / total) * 100)}%` : undefined)}
+        {row('cores', p.cpuCoresW, 'The CPU cores.', undefined, true)}
+        {row('graphics', p.igpuW, 'Intel\'s built-in graphics.', undefined, true)}
+        {row('rest of chip', p.cpuRestW, 'Caches, the memory controller and I/O: the package less the cores and graphics.', undefined, true)}
+        {row('Memory', p.dramW, 'Memory, as the CPU measures it.')}
+        {row('GPU', p.gpuW, 'The NVIDIA GPU, from its driver.', p.gpuLimitW != null ? `of ${Math.round(p.gpuLimitW)} W limit` : undefined)}
+        {row('Not measured', p.restW, 'The rest of the laptop: screen, SSD, fans, Wi-Fi, memory and the board. On battery it is the battery\'s draw less the measured parts.')}
+        {b && b.chargingW > 0 && row('Charging', b.chargingW, 'Power going into the battery.')}
+      </div>
+      <div>
+        <p className="small">{p.inputW != null
+          ? `On battery: ${watts(p.inputW)} comes in and goes out to the parts below. ${watts(p.measuredW)} of it is measured directly; the remaining ${watts(p.restW)} goes to parts nothing measures.`
+          : `On AC: the parts that report their power draw ${watts(p.measuredW)} together. Windows doesn't report what the adapter delivers, so the whole laptop's input shows on battery only: unplug to see it.`}</p>
+        <p className="muted small">Bars show each part's share of {p.inputW != null ? 'the input' : 'the measured total'}, a pale rose for a little, red, and a pinkish flame for a lot. The CPU's figures come from its own energy meters (no driver); the GPU's from NVIDIA's driver; the battery's from Windows.</p>
+      </div>
+    </div>
+  );
+}
+
+/** The CPU-Z / GPU-Z panel: every core's clock, then the GPU's. */
+function ClocksPanel({ c }: { c: Clocks | null }) {
+  const cpu = c?.cpu;
+  const gpu = c?.gpu;
+  // Bars against 5 GHz for the cores (the turbo limit isn't something Windows reports).
+  const SCALE = 5000;
+  return (
+    <div className="clk-grid">
+      <div>
+        <div className="clk-head">
+          <span className="lbl">CPU</span>
+          <span><b className="mono">{ghz(cpu?.avgMhz)}</b> <small className="muted">average</small></span>
+          <span><b className="mono">{ghz(cpu?.maxMhz)}</b> <small className="muted">fastest core</small></span>
+        </div>
+        {cpu ? cpu.cores.map((k) => (
+          <ClockBar key={k.label} label={k.label} mhz={k.mhz} of={SCALE} hint={`${k.efficient ? 'Efficient' : 'Performance'} core, threads ${k.threads.join(', ')}, rated ${(k.baseMhz / 1000).toFixed(1)} GHz`} />
+        )) : <p className="muted small">{c?.cpuError ?? 'Reading…'}</p>}
+        {cpu && <p className="muted small">Each core's running clock, measured by the CPU itself (turbo included), averaged over the last second, like Task Manager's Speed. P are performance cores, E efficient ones; bars against 5 GHz.</p>}
+      </div>
+      <div>
+        <div className="clk-head">
+          <span className="lbl">GPU</span>
+          <span><b className="mono">{mhzText(gpu?.coreMhz)}</b> <small className="muted">core</small></span>
+          <span><b className="mono">{gpu?.pstate != null ? `P${gpu.pstate}` : '—'}</b> <small className="muted">state</small></span>
+        </div>
+        {gpu ? (
+          <>
+            <p className="small">{gpu.name}</p>
+            <ClockBar label="Core" mhz={gpu.coreMhz} of={gpu.maxCoreMhz ?? 2000} note={`${mhzText(gpu.coreMhz)} of ${mhzText(gpu.maxCoreMhz)}`} />
+            <ClockBar label="Memory" mhz={gpu.memMhz} of={gpu.maxMemMhz ?? 8000} note={`${mhzText(gpu.memMhz)} of ${mhzText(gpu.maxMemMhz)}`} />
+            <div className="m-totals clk-more">
+              <span>Power <b className="mono">{gpu.powerW != null ? `${gpu.powerW.toFixed(1)} W` : '—'}</b></span>
+              <span>Load <b className="mono">{gpu.loadPct != null ? `${gpu.loadPct}%` : '—'}</b></span>
+              <span>Temperature <b className="mono">{gpu.tempC != null ? `${gpu.tempC} °C` : '—'}</b></span>
+            </div>
+            <p className="muted small">From NVIDIA's driver, as nvidia-smi and GPU-Z read it. P0 is full speed; higher states are slower and save power. Intel's built-in graphics doesn't report its clock.</p>
+          </>
+        ) : <p className="muted small">{c?.gpuError ?? 'Reading…'}</p>}
+      </div>
+    </div>
+  );
+}
 
 /** Mode switching shared by Overview and Performance: one request at a time, result shown in plain words. */
 export function useModes(status: Status | null, controls: Controls | null) {
@@ -89,11 +206,12 @@ export function Overview({ status, history, controls }: { status: Status | null;
   const [hover, setHover] = useState<number | null>(null);
   const shown = hover != null ? history[hover] : history[history.length - 1] ?? null;
   const gpuNow = history[history.length - 1]?.gpu_pct;
+  const clk = useClocks();
   return (
     <div className="cockpit">
       <div className={`verdict ${v.tone}`}><span className="v-dot" />{v.text}</div>
       <div className="hero">
-        <Gauge label="CPU" value={cpu} sub={<Tip text="CPU package power from Windows' energy meter (no driver needed)."><span className="mono">{w != null ? `${w.toFixed(1)} W` : '—'}</span></Tip>} tip="CPU temperature from the Alienware firmware sensor the CPU fans follow. TjMax is 100 °C: the CPU slows itself down there." />
+        <Gauge label="CPU" value={cpu} sub={<Tip text={`Average clock over every core (fastest core ${ghz(clk?.cpu?.maxMhz)}), and CPU package power from Windows' energy meter. Every core is on the Performance page.`}><span className="mono">{ghz(clk?.cpu?.avgMhz)} · {w != null ? `${w.toFixed(1)} W` : '—'}</span></Tip>} tip="CPU temperature from the Alienware firmware sensor the CPU fans follow. TjMax is 100 °C: the CPU slows itself down there." />
         <div className="hero-mid">
           <span className="lbl">Thermal mode</span>
           <span className="mode-now">{s?.profile_name ?? '—'}</span>
@@ -101,7 +219,7 @@ export function Overview({ status, history, controls }: { status: Status | null;
           {m.result && <span className={m.result.ok ? 'm-res ok' : 'm-res bad'}>{m.result.text}</span>}
           {!m.enabled && <LockedWhy reasons={controls?.modes.reasons ?? []} />}
         </div>
-        <Gauge label="GPU" value={gpu} sub={<Tip text="The busiest GPU engine right now, from Windows' counters."><span className="mono">{gpuNow != null ? `${gpuNow}% busy` : '—'}</span></Tip>} tip="GPU temperature from the Alienware firmware sensor the GPU fans follow." />
+        <Gauge label="GPU" value={gpu} sub={<Tip text={`The NVIDIA GPU's core clock${clk?.gpu?.maxCoreMhz ? ` (up to ${clk.gpu.maxCoreMhz} MHz)` : ''} and power${clk?.gpu?.powerLimitW ? ` (limit ${Math.round(clk.gpu.powerLimitW)} W)` : ''}, from its driver; the busiest GPU engine is ${gpuNow != null ? `${gpuNow}%` : 'not known'}. More on the Performance page.`}><span className="mono">{mhzText(clk?.gpu?.coreMhz)} · {watts(clk?.gpu?.powerW)}</span></Tip>} tip="GPU temperature from the Alienware firmware sensor the GPU fans follow." />
       </div>
       <EnergySaverNote status={status} />
       {controls?.emergency?.active && <div className="note warn span3">Emergency fan rule: every fan is at full until the laptop cools to {controls.emergency.releaseC} °C. Fan changes wait until then.</div>}
@@ -118,7 +236,7 @@ export function Overview({ status, history, controls }: { status: Status | null;
           {!s && <p className="muted">No fan readings without the hardware service.</p>}
         </div>
       </Section>
-      <Section title="Power and load · each line on its own scale · hover for any moment" className="span3">
+      <Section title="Power and load · each line on its own scale · hover for any moment" className="span3" right={clk?.power && <Tip text="The CPU package and the NVIDIA GPU together, as they report it. Where every watt goes is on the Performance page."><span className="lbl">measured now <b className="mono">{watts(clk.power.measuredW)}</b></span></Tip>}>
         <LoadChart points={history} hover={hover} onHover={setHover} series={loadSeries(history)} />
       </Section>
     </div>
@@ -132,9 +250,16 @@ export function Performance({ status, history, controls, settings, save }: { sta
   const [sel, setSel] = useState('0x32');
   const [hover, setHover] = useState<number | null>(null);
   const curve = settings?.fanCurves[sel] ?? [[45, 0], [65, 25], [80, 60], [92, 100]];
+  const clk = useClocks();
   return (
     <div className="cockpit">
       <EnergySaverNote status={status} />
+      <Section title="Clocks · live, like CPU-Z and GPU-Z" className="span3">
+        <ClocksPanel c={clk} />
+      </Section>
+      <Section title="Power · where it goes" className="span3">
+        <PowerPanel c={clk} />
+      </Section>
       <Section title="Thermal mode" className="span3" right={<span className="lbl">{m.enabled ? `via ${controls?.modes.route}` : 'read only'}</span>}>
         <div className="mode-cards">
           {[...['0xA3', '0xA0', '0xA1', '0xA4', '0xA5'], '0xAB'].filter((id) => m.available.includes(id)).map((id) => (

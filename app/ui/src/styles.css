@@ -129,6 +129,19 @@ html[data-text='large'] .app { zoom: 1.08; width: calc(100vw / 1.08); height: ca
 .tabs button.on { background: var(--surface); color: var(--ink); box-shadow: var(--raised); }
 .m-totals { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
 .m-totals b { color: var(--ink); }
+/* Clocks (Performance): CPU cores and GPU, one bar each. */
+.clk-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 28px; }
+@media (max-width: 980px) { .clk-grid { grid-template-columns: minmax(0, 1fr); } }
+.clk-head { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; margin-bottom: 10px; }
+.clk-head b { font-size: 18px; color: var(--ink); }
+.clk-row { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 3px 0; font-size: 12px; }
+.clk-lbl { color: var(--muted); }
+.clk-bar { height: 6px; border-radius: 999px; background: var(--glass); box-shadow: var(--sunk); overflow: visible; }
+.clk-bar i { display: block; height: 100%; border-radius: inherit; background: var(--hue-red-mark); transition: width 0.6s ease, background 0.6s ease, box-shadow 0.6s ease; }
+.pw-row { grid-template-columns: 96px minmax(0, 1fr) auto; }
+.pw-sub .clk-lbl { padding-left: 12px; font-size: 11px; }
+.pw-sub .clk-bar { height: 4px; }
+.clk-more { margin-top: 10px; }
 .procs { list-style: none; display: flex; flex-direction: column; gap: 9px; }
 .procs li { display: grid; grid-template-columns: minmax(0, 1fr) 70px 74px; gap: 10px; align-items: center; }
 .p-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
@@ -273,6 +286,10 @@ html[data-fx-press='on'] button.rippling::after { content: ''; position: absolut
    behind), with a bevel: a lit top lip, a dark bottom lip and a soft drop. Tracks are pressed in, the selected
    control is lifted; neither changes colour. Data (gauge arcs, chart lines, warnings) keeps its colour. */
 :root {
+  /* "How much is used" bars (owner, 2026-11-25): a pale rose (red over --bar-low) at little, the theme's red,
+     then --flame, a pinkish flame red, at a lot. */
+  --bar-low: oklch(0.97 0 0);
+  --flame: oklch(0.69 0.24 5);
   --glass: color-mix(in oklab, var(--ink) 2.5%, transparent);
   --glass-up: color-mix(in oklab, var(--ink) 8%, transparent);
   --hi: color-mix(in oklab, white 7%, transparent);
@@ -282,6 +299,7 @@ html[data-fx-press='on'] button.rippling::after { content: ''; position: absolut
   --lift: inset 0 1px 0 color-mix(in oklab, white 11%, transparent), inset 0 -1px 0 oklch(0 0 0 / 0.3), 0 2px 6px -1px oklch(0 0 0 / 0.45);
 }
 [data-theme='light'] {
+  --bar-low: color-mix(in oklab, var(--ink) 22%, white);
   --hi: color-mix(in oklab, white 85%, transparent);
   --lo: oklch(0 0 0 / 0.07);
   --bevel: inset 0 1px 0 var(--hi), inset 0 -1px 0 var(--lo), 0 1px 2px oklch(0 0 0 / 0.06), 0 16px 34px -22px oklch(0 0 0 / 0.28);

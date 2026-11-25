@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_AWCC_KEYS, DEMO_LAYOUT, type Fan, type KeyboardLight, type KeyInfo, type LightingSettings, type ReactiveSettings, type Snapshot, type Status } from './api';
 import {
-  alertText, BLADES, composeKey, LIVE_DEFAULTS, LIVE_KINDS, liveOf, liveSummary, MOUSE_MODES, TAP_KINDS, toggleTap, REACTIVE_DEFAULTS, reactiveOf, debounce, dimHex, drawnRevPerSec, EFFECTS, fanFlag, groupMembers, importAwcc, inkOn, isHex, keyAt, keysAlong, keysInRect, lightingProblem,
+  alertText, BLADES, composeKey, usedColour, usedGlow, LIVE_DEFAULTS, LIVE_KINDS, liveOf, liveSummary, MOUSE_MODES, TAP_KINDS, toggleTap, REACTIVE_DEFAULTS, reactiveOf, debounce, dimHex, drawnRevPerSec, EFFECTS, fanFlag, groupMembers, importAwcc, inkOn, isHex, keyAt, keysAlong, keysInRect, lightingProblem,
   MAX_DRAWN_REV_PER_S, MAX_FRAME_S, mergeHistory, mostCommon, normHex, palette, rotorPercent, shownColors, stoppedZones, stuckFans, toggleKey, verdict, zoneName,
 } from './logic';
 
@@ -345,6 +345,17 @@ describe('the backend’s checks, mirrored', () => {
     expect(lightingProblem(lv({ tapSpeed: 100 }), tiny, GROUPS)).toMatch(/5 to 80/);
 
 
+  });
+  it('colours how much is used from a pale rose through the theme red to a pinkish flame', () => {
+    expect(usedColour(0)).toBe('color-mix(in oklab, var(--hue-red-mark) 40%, var(--bar-low))');
+    expect(usedColour(30)).toBe('color-mix(in oklab, var(--hue-red-mark) 70%, var(--bar-low))');
+    expect(usedColour(60)).toBe('color-mix(in oklab, var(--hue-red-mark) 100%, var(--bar-low))');
+    expect(usedColour(80)).toBe('color-mix(in oklab, var(--flame) 50%, var(--hue-red-mark))');
+    expect(usedColour(140)).toBe('color-mix(in oklab, var(--flame) 100%, var(--hue-red-mark))');
+    expect(usedColour(-5)).toContain('40%');
+    expect(usedColour(Number.NaN)).toContain('40%');
+    expect(usedGlow(74)).toBe('none');
+    expect(usedGlow(90)).toContain('var(--flame)');
   });
   it('switches key-press effects on and off in a fixed order, and sums up the layers', () => {
     expect(TAP_KINDS.map((k) => k.id)).toEqual(['laser', 'lightning', 'seismic']);

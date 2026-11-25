@@ -85,6 +85,16 @@ pub enum Cmd {
         #[arg(long, value_name = "N")]
         count: Option<u64>,
     },
+    /// CPU and GPU clocks now, like CPU-Z and GPU-Z (Windows only): each core's running clock (P- and
+    /// E-cores), and the NVIDIA GPU's core and memory clocks, power state, power, load and temperature.
+    Clocks {
+        /// Leave the NVIDIA GPU out (reading it can wake it from sleep).
+        #[arg(long)]
+        no_gpu: bool,
+        /// Read this many times, a second apart (default once).
+        #[arg(long, default_value_t = 1)]
+        count: u32,
+    },
     /// Battery wear, disk wear, crashes and hardware errors (Windows only).
     Health {
         /// How many days of events to count.
@@ -501,6 +511,7 @@ fn dispatch(ctx: &mut Ctx, cmd: Cmd) -> R {
         Cmd::Fan(FanCmd::Reset) => fan_reset(ctx),
         Cmd::Guard { trigger, count } => guard(ctx, trigger, count),
         Cmd::Health { days } => health(ctx, days),
+        Cmd::Clocks { no_gpu, count } => clocks(ctx, !no_gpu, count),
         Cmd::Drift => drift(ctx),
         Cmd::Lighting { cmd: LightingCmd::Probe, .. } => lighting_probe(ctx),
         Cmd::Lighting { cmd: LightingCmd::Show, .. } => lighting_show(ctx),
@@ -861,6 +872,72 @@ fn health(ctx: &mut Ctx, days: u32) -> R {
 #[cfg(not(windows))]
 fn health(_ctx: &mut Ctx, _days: u32) -> R {
     Err(windows_only("health"))
+}
+
+/// The clocks as text: CPU average and fastest core, each core, then the GPU.
+pub fn clocks_text(c: &wiregent_hw::clocks::Clocks) -> String {
+    let ghz = |m: f64| format!("{:.2} GHz", m / 1_000.0);
+    let mut t = String::new();
+    match &c.cpu {
+        Some(cpu) => {
+            t.push_str(&format!("CPU         {} average, fastest core {}\n", ghz(cpu.avg_mhz), ghz(cpu.max_mhz)));
+            for k in &cpu.cores {
+                t.push_str(&format!("  {:<4} {:>9}  (rated {:.1} GHz, threads {:?})\n", k.label, ghz(k.mhz), k.base_mhz as f64 / 1_000.0, k.threads));
+            }
+        }
+        None => t.push_str(&format!("CPU         {}\n", c.cpu_error.as_deref().unwrap_or("no reading"))),
+    }
+    match &c.gpu {
+        Some(g) => {
+            let mhz = |v: Option<u32>| v.map_or("-".to_string(), |v| format!("{v} MHz"));
+            t.push_str(&format!("GPU         {}\n", g.name));
+            t.push_str(&format!("  core     {} of {}\n", mhz(g.core_mhz), mhz(g.max_core_mhz)));
+            t.push_str(&format!("  memory   {} of {}\n", mhz(g.mem_mhz), mhz(g.max_mem_mhz)));
+            t.push_str(&format!("  state    {}, {}, load {}, {}\n", g.pstate.map_or("-".into(), |p| format!("P{p}")), g.power_w.map_or("-".into(), |w| format!("{w:.1} W")), g.load_pct.map_or("-".into(), |l| format!("{l} %")), g.temp_c.map_or("-".into(), |c| format!("{c} °C"))));
+        }
+        None => {
+            if let Some(e) = &c.gpu_error {
+                t.push_str(&format!("GPU         {e}\n"));
+            }
+        }
+    }
+    if let Some(p) = &c.power {
+        let w = |v: Option<f64>| v.map_or("-".to_string(), |v| format!("{v:.1} W"));
+        t.push_str(&format!("Power       measured {:.1} W\n", p.measured_w));
+        t.push_str(&format!("  CPU      {} (cores {}, graphics {}, rest of the chip {})\n", w(p.cpu_package_w), w(p.cpu_cores_w), w(p.igpu_w), w(p.cpu_rest_w)));
+        if p.dram_w.is_some() {
+            t.push_str(&format!("  memory   {}\n", w(p.dram_w)));
+        }
+        t.push_str(&format!("  GPU      {}{}\n", w(p.gpu_w), p.gpu_limit_w.map_or(String::new(), |l| format!(" of {l:.0} W"))));
+        match (&p.battery, p.input_w) {
+            (Some(b), Some(i)) if !b.on_ac => t.push_str(&format!("  input    {i:.1} W from the battery; not measured {}\n", w(p.rest_w))),
+            (Some(b), _) => t.push_str(&format!("  input    on AC (Windows doesn't report the adapter); charging the battery {:.1} W\n", b.charging_w)),
+            (None, _) => t.push_str("  input    no battery reading\n"),
+        }
+    }
+    t
+}
+
+#[cfg(windows)]
+fn clocks(ctx: &mut Ctx, gpu: bool, count: u32) -> R {
+    let mut r = wiregent_hw::clocks::win::ClockReader::new();
+    // The CPU clocks are averages since the last read: give the first one a second.
+    ctx.clock.sleep_ms(1_000);
+    let mut last = r.read(gpu);
+    for i in 1..count.max(1) {
+        if !ctx.json {
+            writeln!(ctx.out, "{}", clocks_text(&last))?;
+        }
+        let _ = i;
+        ctx.clock.sleep_ms(1_000);
+        last = r.read(gpu);
+    }
+    ctx.emit(serde_json::to_value(&last).unwrap_or_default(), clocks_text(&last).trim_end())
+}
+
+#[cfg(not(windows))]
+fn clocks(_ctx: &mut Ctx, _gpu: bool, _count: u32) -> R {
+    Err(windows_only("clocks"))
 }
 
 #[cfg(windows)]

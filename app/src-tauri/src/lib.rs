@@ -52,6 +52,9 @@ pub struct App {
     light: lights::Shared,
     /// The keyboard's lighting interface was found (by the last probe).
     keyboard_found: Arc<AtomicBool>,
+    /// CPU and GPU clocks, made on the first `clocks` call (a page that shows them is open).
+    #[cfg(windows)]
+    clocks: Arc<Mutex<Option<wiregent_hw::clocks::win::ClockReader>>>,
 }
 
 // Commands the window polls run off the main thread (async): a sync command runs on the thread that also
@@ -60,6 +63,29 @@ pub struct App {
 async fn status(app: State<'_, App>) -> Result<Value, String> {
     let st = app.readings.lock().unwrap();
     Ok(json!({ "source": st.source, "snapshot": st.snapshot, "lists": st.lists, "power": st.power, "error": st.error, "ageMs": st.updated.map(|u| u.elapsed().as_millis() as u64), "energySaver": energy_saver(), "elevated": elevate::is_elevated() }))
+}
+
+/// CPU and GPU clocks now, like CPU-Z and GPU-Z. Only the Cockpit and Performance pages ask, about once a
+/// second while they're open: reading the NVIDIA GPU (`gpu`) can wake it from sleep, so nothing reads it from the
+/// tray.
+#[tauri::command]
+async fn clocks(app: State<'_, App>, gpu: bool) -> Result<Value, String> {
+    #[cfg(windows)]
+    {
+        let c = app.clocks.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut g = c.lock().unwrap_or_else(|e| e.into_inner());
+            let r = g.get_or_insert_with(wiregent_hw::clocks::win::ClockReader::new);
+            serde_json::to_value(r.read(gpu)).unwrap_or_default()
+        })
+        .await
+        .map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, gpu);
+        Ok(serde_json::to_value(wiregent_hw::clocks::Clocks { cpu_error: Some("clocks are read on Windows only".into()), ..Default::default() }).unwrap_or_default())
+    }
 }
 
 /// Whether Windows Energy Saver (battery saver) is on: Windows then caps CPU power, so thermal modes
@@ -523,8 +549,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)))
         .plugin(tauri_plugin_notification::init())
-        .manage(App { readings: readings.clone(), modes: Arc::new(Mutex::new(Modes::default())), demo: demo.clone(), settings: Mutex::new(settings), health: Mutex::new(None), status_item: Mutex::new(None), light: Default::default(), keyboard_found: Default::default() })
-        .invoke_handler(tauri::generate_handler![status, history, health, drift, lighting, lighting_status, lighting_set, lighting_preview_key, lighting_restore_awcc, lighting_import_awcc, game_library, settings_get, settings_set, controls, set_mode, set_fan_boost, log_days, log_read, log_cleanup, open_alienware_update, restart_elevated])
+        .manage(App { readings: readings.clone(), modes: Arc::new(Mutex::new(Modes::default())), demo: demo.clone(), settings: Mutex::new(settings), health: Mutex::new(None), status_item: Mutex::new(None), light: Default::default(), keyboard_found: Default::default(), #[cfg(windows)] clocks: Default::default() })
+        .invoke_handler(tauri::generate_handler![status, history, clocks, health, drift, lighting, lighting_status, lighting_set, lighting_preview_key, lighting_restore_awcc, lighting_import_awcc, game_library, settings_get, settings_set, controls, set_mode, set_fan_boost, log_days, log_read, log_cleanup, open_alienware_update, restart_elevated])
         .setup(move |app| {
             if let Err(e) = install_tray(app.handle()) {
                 eprintln!("tray icon unavailable: {e}");

@@ -173,6 +173,42 @@ function demoSnap(): Snapshot {
 let demoSettings: Settings = { demo: true, emergencyC: 98, defaultProfile: '0xA0', boostKey: 'awcc', fanCurves: {}, gameModes: {}, notify: true, theme: 'dark', log: { enabled: true, everyS: 30, keepDays: 14, maxMb: 200 }, liveAdmin: true, autostart: false, effects: { motion: false, hover: true, press: true, largeText: true } };
 const demoBoost: Record<string, number> = {};
 let demoLast: ModeChange | null = null;
+/** CPU and GPU clocks now (the `clocks` command; like CPU-Z and GPU-Z). */
+export interface CoreClock { label: string; efficient: boolean; threads: number[]; baseMhz: number; mhz: number }
+export interface CpuClocks { cores: CoreClock[]; avgMhz: number; maxMhz: number }
+export interface GpuClocks { name: string; coreMhz: number | null; memMhz: number | null; maxCoreMhz: number | null; maxMemMhz: number | null; pstate: number | null; powerW: number | null; loadPct: number | null; tempC: number | null; powerLimitW: number | null }
+export interface BatteryNow { onAc: boolean; chargingW: number; dischargingW: number }
+/** Where the power goes, W; null where nothing reports it. */
+export interface PowerDraw {
+  cpuPackageW: number | null; cpuCoresW: number | null; igpuW: number | null; dramW: number | null; cpuRestW: number | null;
+  gpuW: number | null; gpuLimitW: number | null; measuredW: number; battery: BatteryNow | null;
+  /** on battery: its discharge (the whole laptop); on AC: not reported */
+  inputW: number | null; outputW: number | null;
+  /** on battery: input less the measured parts (screen, SSD, fans, Wi-Fi...) */
+  restW: number | null;
+}
+export interface Clocks { cpu: CpuClocks | null; gpu: GpuClocks | null; power: PowerDraw | null; cpuError: string | null; gpuError: string | null }
+
+/** Demo clocks: the owner's i7-12700H (6 P-cores at 2.3 GHz rated, 8 E-cores at 1.7) and RTX 3070 Ti Laptop. */
+function demoClocks(): Clocks {
+  const t = Date.now() / 1000;
+  const wob = (i: number, amp: number) => Math.sin(t * 0.7 + i * 1.3) * amp;
+  const cores: CoreClock[] = [
+    ...Array.from({ length: 6 }, (_, i) => ({ label: `P${i}`, efficient: false, threads: [i * 2, i * 2 + 1], baseMhz: 2300, mhz: 2650 + wob(i, 900) })),
+    ...Array.from({ length: 8 }, (_, i) => ({ label: `E${i}`, efficient: true, threads: [12 + i], baseMhz: 1700, mhz: 1900 + wob(i + 6, 700) })),
+  ];
+  const avg = cores.reduce((a, c) => a + c.mhz, 0) / cores.length;
+  const gpuW = 48 + wob(3, 12);
+  const pkg = 38 + wob(5, 8);
+  return {
+    cpu: { cores, avgMhz: avg, maxMhz: Math.max(...cores.map((c) => c.mhz)) },
+    gpu: { name: 'NVIDIA GeForce RTX 3070 Ti Laptop GPU', coreMhz: Math.round(1300 + wob(9, 400)), memMhz: 6001, maxCoreMhz: 1785, maxMemMhz: 7001, pstate: 3, powerW: gpuW, loadPct: Math.round(38 + wob(4, 25)), tempC: 57, powerLimitW: 132 },
+    power: { cpuPackageW: pkg, cpuCoresW: pkg * 0.77, igpuW: null, dramW: null, cpuRestW: pkg * 0.23, gpuW, gpuLimitW: 132, measuredW: pkg + gpuW, battery: { onAc: true, chargingW: 0, dischargingW: 0 }, inputW: null, outputW: null, restW: null },
+    cpuError: null,
+    gpuError: null,
+  };
+}
+
 const demo = {
   status: (): Status => {
     demoHistory.push(demoPoint(demoT++));
@@ -302,6 +338,8 @@ export const api = {
   settings: () => (inApp ? call<Settings>('settings_get') : Promise.resolve(demoSettings)),
   saveSettings: (s: Settings) => (inApp ? call<Settings>('settings_set', { settings: s }) : Promise.resolve((demoSettings = s))),
   controls: () => (inApp ? call<Controls>('controls') : Promise.resolve(demo.controls())),
+  /** `gpu`: read the NVIDIA GPU too (it can wake it from sleep: only while a page shows it). */
+  clocks: (gpu: boolean) => (inApp ? call<Clocks>('clocks', { gpu }) : Promise.resolve(demoClocks())),
   setMode: (profile: string) => (inApp ? call<ModeChange>('set_mode', { profile }) : demo.setMode(profile)),
   setFanBoost: (fans: string[], level: number) => (inApp ? call<BoostChange[]>('set_fan_boost', { fans, level }) : demo.setFanBoost(fans, level)),
   logDays: () => (inApp ? call<{ days: LogDay[]; totalBytes: number; dir: string }>('log_days') : Promise.resolve(demo.logDays())),

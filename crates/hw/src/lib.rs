@@ -12,6 +12,7 @@ pub mod client;
 pub mod client_identity;
 pub mod control;
 pub mod drift;
+pub mod clocks;
 pub mod health;
 pub mod linux;
 pub mod machine;

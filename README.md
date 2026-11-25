@@ -26,6 +26,14 @@ interface Dell's app uses. It runs without Dell's background services.
 ## What it does
 
 - Live CPU and GPU temperatures, per-zone fan speeds (rpm and percent), with a history chart.
+- Live CPU and GPU clocks, like CPU-Z and GPU-Z: every core's running clock (P- and E-cores, turbo included,
+  from Windows' own counters) and the NVIDIA GPU's core and memory clocks, power state, power and load (from
+  NVIDIA's driver library). Read only while the Cockpit or Performance page is open; `cockpit clocks` on the
+  command line.
+- Where the power goes: the CPU package (cores, built-in graphics, the rest of the chip) from its own energy
+  meters, the NVIDIA GPU against its power limit, and the battery. On battery its discharge is the whole
+  laptop's input, against the measured parts and the rest nothing measures; on AC Windows doesn't report the
+  adapter's power, so the measured parts are shown.
 - Thermal modes: Quiet, Balanced, Performance, Full Speed, Battery Saver and G-Mode.
 - Fan boost per fan, through the firmware's own allow-listed calls only.
 - An emergency rule: when any sensor stays at the trigger (98 °C by default, can only be lowered) for 5 s,
