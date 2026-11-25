@@ -586,7 +586,7 @@ export function Lighting() {
                 <span className="lbl">Trail {live.fadeMs === 0 ? 'stays' : `${(live.fadeMs / 1000).toFixed(1)} s`}</span>
                 <input type="range" min={0} max={6000} step={250} value={live.fadeMs} onChange={(e) => setLive({ fadeMs: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
               </label>
-              {live.mouse === 'boost' && live.kind === 'off' && (
+              {live.mouse === 'boost' && (
                 <label className="field">
                   <span className="lbl">Dimmed keys {live.dim}%</span>
                   <input type="range" min={5} max={100} step={5} value={live.dim} onChange={(e) => setLive({ dim: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />

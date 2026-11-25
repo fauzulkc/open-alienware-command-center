@@ -1,14 +1,15 @@
 //! Live lighting in the app: PC-drawn lighting kept running while the app is open (`lighting.live` in
 //! settings.json), in the owner's three layers (2026-11-25), drawn every frame:
 //!
-//! 1. The base profile: the static per-key colours (shown white, dark or dimmed for the mouse's uncover,
-//!    reveal and boost).
+//! 1. The base profile: the static per-key colours (shown white or dark for the mouse's uncover and
+//!    reveal).
 //! 2. The effect ([`LiveKind`]): none, the keyboard clock or the screen mirror. The keyboard's own effects
 //!    (breathing, wave...) are the other choices here, but they run on the chip in place of the per-key
 //!    colours, so nothing of this runs with them.
 //! 3. Live interactions: key presses ([`TapKind`]: a laser along the pressed key's row, lightning in to it, a
 //!    seismic ring erupting from it) and the mouse ([`LiveSettings::mouse`]: a white or screen-colour trail,
-//!    or uncover / reveal / boost, which show the static colours where the pointer goes). Key presses come
+//!    uncover / reveal, which show the static colours where the pointer goes, or boost, which dims what the
+//!    keyboard shows and lifts it where the pointer goes). Key presses come
 //!    from a read-only listener (Raw Input); nothing records which keys were pressed.
 //!
 //! When the display turns off and `clockOnDisplayOff` is set, the base is the clock and the layers rest
@@ -224,7 +225,7 @@ impl LiveSettings {
 pub enum Base {
     /// The base profile.
     Static,
-    /// The base profile shown white, dark or dimmed (the mouse's uncover, reveal, boost).
+    /// The base profile shown white or dark (the mouse's uncover, reveal).
     Look(ClockBase),
     /// The clock effect.
     Clock,
@@ -280,12 +281,14 @@ pub fn plan(s: &LightingSettings, p: &PowerState) -> Option<Plan> {
         "off" => (None, None),
         "glow" => (None, Some(Brush::White)),
         "screen" => (None, Some(Brush::Screen)),
+        // Boost dims whatever shows (the profile, the clock, the mirror) and lifts it under the pointer.
+        "boost" => (None, Some(Brush::Boost)),
         m => {
             let (b, brush) = mousepaint::look(m)?;
             (Some(b), Some(brush))
         }
     };
-    // Uncover, reveal and boost change how the base profile shows; over an effect they bring the static colours
+    // Uncover and reveal change how the base profile shows; over an effect they bring the static colours
     // through it where the pointer goes.
     let base = effect.unwrap_or(match look {
         Some(b) if b != ClockBase::Preset => Base::Look(b),
@@ -569,8 +572,12 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
             }
             _ => static_base.clone(),
         };
+        // Boost works on the picture itself, under the key presses; the other trails paint over them.
+        if plan.trail == Some(Brush::Boost) {
+            f = mousepaint::boosted(&f, paint, now, l.fade_ms, l.dim);
+        }
         with_beams(&mut f, &spots, beams, &*tap_color, now, l.tap_speed);
-        if plan.trail.is_some() {
+        if plan.trail.is_some_and(|b| b != Brush::Boost) {
             f = mousepaint::frame(&f, paint, now, l.fade_ms);
         }
         f
@@ -656,6 +663,8 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
                                 Some(c) => c,
                                 None => continue,
                             },
+                            // Only when it was painted counts; the colour comes from the picture.
+                            Brush::Boost => white,
                         };
                         // A move paints; a still pointer only updates the colour of a key still fading, so the
                         // last key fades like the rest of the trail (the owner, 2026-11-25).
@@ -821,7 +830,14 @@ mod tests {
         s.keyboard.effect = lightctl::KeyEffect::Static;
         // Settings saved before the three layers: kind mouse with its look.
         let old: LightingSettings = serde_json::from_str(r#"{"mode":"custom","live":{"kind":"mouse","look":"boost"}}"#).unwrap();
-        assert_eq!(plan(&old, &p).map(|pl| (pl.base, pl.trail)), Some((Base::Look(ClockBase::Dim), Some(Brush::Preset))));
+        assert_eq!(plan(&old, &p).map(|pl| (pl.base, pl.trail)), Some((Base::Static, Some(Brush::Boost))));
+        // Boost works on whatever shows: the profile, or the effect over it.
+        s.live.mouse = "boost".into();
+        assert_eq!(plan(&s, &p).map(|pl| (pl.base, pl.trail)), Some((Base::Static, Some(Brush::Boost))));
+        s.live.kind = LiveKind::Screen;
+        assert_eq!(plan(&s, &p).map(|pl| (pl.base, pl.trail)), Some((Base::Screen, Some(Brush::Boost))), "boost over the mirror");
+        s.live.kind = LiveKind::Off;
+        s.live.mouse = "off".into();
         // The display off: dark by default; the clock alone with clockOnDisplayOff.
         let off = PowerState { display_off: true, ..Default::default() };
         assert_eq!(plan(&s, &off), None, "dark");
@@ -979,6 +995,27 @@ mod tests {
         assert!(sum.frames > 10 && sum.frames <= 12 * 8, "writes while beams and the trail move, at most 12 a second: {}", sum.frames);
         assert!(sum.keys / sum.frames.max(1) <= 30, "a few keys a write: {} keys in {} writes", sum.keys, sum.frames);
         assert_eq!(pz.paused(), pz.resumed());
+    }
+
+    #[test]
+    fn boost_dims_the_picture_and_lifts_it_under_the_pointer() {
+        // A muted teal from the mirror: dimmed to 70 % away from the pointer, brighter and more saturated under it.
+        let teal = Rgb::new(60, 120, 110);
+        let full = vec![(1u8, teal), (2u8, teal), (3u8, Rgb::new(0, 0, 0))];
+        let mut paint = vec![(1u8, Rgb::new(255, 255, 255), 1_000u64), (3u8, Rgb::new(255, 255, 255), 1_000u64)];
+        let f = mousepaint::boosted(&full, &mut paint, 1_000, 2_000, 70);
+        assert_eq!(f[1].1, mix(Rgb::new(0, 0, 0), teal, 0.7), "away from the pointer: dimmed");
+        let up = f[0].1;
+        assert_eq!(up.r.max(up.g).max(up.b), 255, "under it: full brightness");
+        let sat = |c: Rgb| (c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b)) as f64 / c.r.max(c.g).max(c.b) as f64;
+        assert!(sat(up) > sat(teal) + 0.2, "and more saturated: {up:?}");
+        assert!(up.g > up.b && up.b > up.r, "the hue kept: {up:?}");
+        assert_eq!(f[2].1, Rgb::new(0, 0, 0), "a dark key stays dark");
+        // Halfway through the fade it's between, and when the fade is over it's dimmed again.
+        let mid = mousepaint::boosted(&full, &mut paint, 2_000, 2_000, 70)[0].1;
+        assert!(mid.g < up.g && mid.g > f[1].1.g);
+        assert_eq!(mousepaint::boosted(&full, &mut paint, 3_000, 2_000, 70)[0].1, f[1].1);
+        assert!(paint.is_empty());
     }
 
     /// A pointer that never moves.

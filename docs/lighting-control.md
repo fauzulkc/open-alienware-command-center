@@ -147,7 +147,8 @@ swipe leaves no gaps.
 
 - Looks (`--look`): `glow` (default: the saved colours stay, the mouse lights keys white), `uncover` (white
   keyboard, the mouse shows each key's own colour), `reveal` (dark keyboard, the mouse brings each key's own
-  colour through), `boost` (the saved colours dimmed to `--dim` %, default 70, the owner's pick of 12-70 %; the mouse brings keys to full), `screen` (dark keyboard,
+  colour through), `boost` (the saved colours dimmed to `--dim` %, default 70, the owner's pick of 12-70 %; the mouse lifts
+  keys to full brightness and 1.5x saturation, the hue kept), `screen` (dark keyboard,
   the screen's colour under the pointer).
 - The pointer is polled every 20 ms (`GetCursorPos`), no input hook; the screen's colour (one pixel,
   `GetPixel`) is read only for `screen`. Nothing is stored.
@@ -198,9 +199,12 @@ same in the foreground):
      static colours over the screen mirror. `tapSpeed` keys a second (default 30), at most `tapFps` writes a
      second (12) while one runs. Key presses come from the app's read-only Raw Input listener (the boost
      key's), as LED ids only, delivered only while a run uses them; nothing records them.
-   - **Mouse** (`mouse`): off, `glow` (a white trail), `screen` (a screen-colour trail), or `uncover` /
-     `reveal` / `boost` (the profile shown white, dark or dimmed to `dim` %, the pointer bringing the static
-     colours back where it goes; over the clock or mirror they bring the static colours through). The screen
+   - **Mouse** (`mouse`): off, `glow` (a white trail), `screen` (a screen-colour trail), `uncover` /
+     `reveal` (the profile shown white or dark, the pointer bringing the static colours back where it goes;
+     over the clock or mirror they bring the static colours through), or `boost`: whatever shows (the
+     profile, the clock, the mirror's current colours) dimmed to `dim` %, and where the pointer goes the same
+     colour lifted to full brightness and 1.5x saturation, fading back over the trail (the owner,
+     2026-11-25: "boost the current plotted palette"). Key presses draw over the boost. The screen
      maps onto the keys (top-left = Esc), the trail fades over `fadeMs`. Settings saved before the layers kept
      this as `kind: mouse` with `look`; they still read that way.
 

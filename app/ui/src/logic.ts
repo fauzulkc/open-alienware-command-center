@@ -247,7 +247,7 @@ export const MOUSE_MODES: { id: MouseMode; name: string; what: string }[] = [
   { id: 'screen', name: 'Screen-colour trail', what: 'The key under the pointer takes the screen\'s colour there and fades back.' },
   { id: 'uncover', name: 'Uncover', what: 'The keyboard turns white; the pointer shows your colours where it goes. Over the clock or mirror it brings your colours through.' },
   { id: 'reveal', name: 'Reveal', what: 'The keyboard goes dark; the pointer brings your colours through. Over the clock or mirror it brings your colours through.' },
-  { id: 'boost', name: 'Boost', what: 'Your colours dimmed; the pointer brings keys to full brightness. Over the clock or mirror it brings your colours through.' },
+  { id: 'boost', name: 'Boost', what: 'Whatever shows (your colours, the clock or the mirror) dimmed; the pointer lifts it to full brightness and richer colour.' },
 ];
 
 /** A bar's fill for `pct` used (the owner, 2026-11-25: "more red, less white; more utilization = better =

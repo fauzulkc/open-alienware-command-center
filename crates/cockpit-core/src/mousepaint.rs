@@ -6,8 +6,9 @@
 //! - glow (default): the saved colours stay (base `preset`) and the mouse lights keys white (brush `white`);
 //! - uncover: the keyboard white (base `white`) and the mouse shows each key's own colour (brush `preset`);
 //! - reveal: the keyboard dark (base `off`) and the mouse brings each key's own colour through (brush `preset`);
-//! - boost: the saved colours dimmed (base `dim`, `dim_pct`) and the mouse brings each key to full (brush
-//!   `preset`). The owner tried 12, 25, 40, 55 and 70 % (2026-11-24) and picked 70 ([`DEFAULT_DIM_PCT`]).
+//! - boost: the saved colours dimmed (base `dim`, `dim_pct`) and the mouse lifts each key to full brightness
+//!   and richer colour (brush `boost`, [`lift`]). The owner tried 12, 25, 40, 55 and 70 % (2026-11-24) and
+//!   picked 70 ([`DEFAULT_DIM_PCT`]); in the app boost works on whatever shows, the clock or mirror too.
 //!
 //! Look `screen` paints the screen's colour under the pointer on a dark keyboard.
 //!
@@ -56,6 +57,41 @@ pub enum Brush {
     Preset,
     /// The screen's colour under the pointer.
     Screen,
+    /// What the keyboard shows under the pointer, lifted ([`lift`]): with look `boost` the keyboard is dimmed
+    /// and the pointer brings it back brighter and more saturated (over the clock or the screen mirror too).
+    Boost,
+}
+
+/// Boost: how much more saturated a lifted key is.
+pub const BOOST_SATURATION: f64 = 1.5;
+/// Boost leaves keys darker than this (largest channel) alone, so a dark key doesn't light up as noise.
+const LIFT_FLOOR: u8 = 12;
+
+/// A key's colour boosted (the owner, 2026-11-25: "boost the color saturation and the lighting"): more
+/// saturated ([`BOOST_SATURATION`]) and at full brightness (its largest channel at 255), the hue kept. A key
+/// near black stays as it is.
+pub fn lift(c: Rgb) -> Rgb {
+    let m = c.r.max(c.g).max(c.b);
+    if m < LIFT_FLOOR {
+        return c;
+    }
+    let s = crate::screenmirror::saturate(c, BOOST_SATURATION);
+    let m = s.r.max(s.g).max(s.b).max(1) as f64;
+    let ch = |x: u8| (x as f64 * 255.0 / m).round().clamp(0.0, 255.0) as u8;
+    Rgb::new(ch(s.r), ch(s.g), ch(s.b))
+}
+
+/// Boost over any picture `full` (sent colours): every key dimmed to `dim_pct` %, the painted keys lifted
+/// ([`lift`]) and easing back to dimmed by [`left`]. Keys whose paint is gone are dropped from `paint`.
+pub fn boosted(full: &[(u8, Rgb)], paint: &mut Vec<(u8, Rgb, u64)>, now: u64, fade_ms: u64, dim_pct: u32) -> Vec<(u8, Rgb)> {
+    paint.retain(|(_, _, t)| fade_ms == 0 || now.saturating_sub(*t) < fade_ms);
+    let dim = dim_pct.min(100) as f64 / 100.0;
+    full.iter()
+        .map(|(id, c)| {
+            let low = mix(Rgb::new(0, 0, 0), *c, dim);
+            (*id, paint.iter().find(|(k, _, _)| k == id).map_or(low, |(_, _, t)| mix(low, lift(*c), left(now.saturating_sub(*t), fade_ms))))
+        })
+        .collect()
 }
 
 /// A look by name: (base, brush).
@@ -64,7 +100,7 @@ pub fn look(name: &str) -> Option<(ClockBase, Brush)> {
         "glow" => Some((ClockBase::Preset, Brush::White)),
         "uncover" => Some((ClockBase::White, Brush::Preset)),
         "reveal" => Some((ClockBase::Off, Brush::Preset)),
-        "boost" => Some((ClockBase::Dim, Brush::Preset)),
+        "boost" => Some((ClockBase::Dim, Brush::Boost)),
         "screen" => Some((ClockBase::Off, Brush::Screen)),
         _ => None,
     }
@@ -252,6 +288,10 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
                         },
                         Brush::Screen => match sampled {
                             Some(c) => c,
+                            None => continue,
+                        },
+                        Brush::Boost => match preset.iter().find(|(k, _)| *k == id) {
+                            Some((_, c)) => lift(*c),
                             None => continue,
                         },
                     };

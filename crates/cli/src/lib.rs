@@ -202,7 +202,7 @@ pub enum LightingCmd {
     /// pointer lights up and fades back (--fade-ms), so the mouse leaves a trail. Looks: glow (your colours
     /// stay, the mouse lights keys white), uncover (white keyboard, the mouse shows each key's own colour),
     /// reveal (dark keyboard, the mouse brings each key's own colour through), boost (your colours
-    /// dimmed to --dim %, the mouse brings keys to full), screen (dark keyboard, the screen's colour under the pointer).
+    /// dimmed to --dim %, the mouse lifts keys to full brightness and richer colour), screen (dark keyboard, the screen's colour under the pointer).
     /// The pointer's position is polled (no input hook). Ctrl+C or --seconds stops it and writes the static
     /// colours back.
     Mouse {
