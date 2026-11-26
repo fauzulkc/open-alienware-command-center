@@ -498,6 +498,9 @@ pub struct Sources<'a> {
     pub pointer: Option<&'a mut dyn PointerSource>,
     pub screen: Option<&'a mut dyn ScreenSource>,
     pub keys: Option<&'a mut dyn FnMut() -> Vec<u8>>,
+    /// The power state now (day and night's level moves through the evening): looked at once a second, and a
+    /// new brightness is sent on the run's own handle, between frames, without stopping the run.
+    pub power: Option<&'a mut dyn FnMut() -> PowerState>,
 }
 
 /// What a run did.
@@ -515,6 +518,8 @@ pub struct LiveSummary {
 const POLL_MS: u64 = 20;
 /// A still pointer's colour is read again this often, ms (screen-colour brush).
 const RESAMPLE_MS: u64 = 250;
+/// The power state's level is looked at this often, ms.
+const LEVEL_MS: u64 = 1_000;
 
 /// Runs `plan` on `io` until `stop(now)`, then writes the static colours back. AWCC is paused around each
 /// write only.
@@ -522,7 +527,7 @@ const RESAMPLE_MS: u64 = 250;
 pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Shown, pauser: Option<&dyn Pauser>, plan: Plan, clock: &mut dyn Clock, src: Sources, stop: &mut dyn FnMut(u64) -> bool) -> Result<LiveSummary, String> {
     s.validate()?;
     let l = &s.live;
-    let Sources { time, mut pointer, mut screen, mut keys } = src;
+    let Sources { time, mut pointer, mut screen, mut keys, mut power } = src;
     if plan.needs_pointer() && pointer.is_none() {
         return Err("the mouse pointer can't be read".into());
     }
@@ -587,13 +592,15 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
     let steps = full_plan(prev, &shown, s, p)?;
     check_steps(Api::V5, &steps)?;
     let mut dev = io.keyboard()?;
-    let during = Shown { effect: false, level: lightctl::level(s, p) };
-    let put_back = |io: &mut dyn LightIo| lightctl::write_from(io, during, s, p, pauser);
+    // The brightness now, and the power state it came from: day and night changes it during the run.
+    let mut p_now = *p;
+    let mut lvl = lightctl::level(s, p);
+    let put_back = |io: &mut dyn LightIo, p: &PowerState, lvl: u32| lightctl::write_from(io, Shown { effect: false, level: lvl }, s, p, pauser);
     let first = match send(dev.as_mut(), pauser, &steps) {
         Ok(n) => n,
         Err(e) => {
             drop(dev);
-            let _ = put_back(io);
+            let _ = put_back(io, &p_now, lvl);
             return Err(format!("live lighting couldn't start: {e}"));
         }
     };
@@ -610,7 +617,7 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
     .unwrap_or(20);
     let interval = 1_000 / fps.max(1) as u64;
     let grab_every = 1_000 / l.screen_fps.max(1) as u64;
-    let (mut next_write, mut next_grab, mut last_grab) = (t0, t0 + grab_every, t0);
+    let (mut next_write, mut next_grab, mut last_grab, mut next_level) = (t0, t0 + grab_every, t0, t0 + LEVEL_MS);
     let mut failed = None;
     loop {
         let now = clock.now_ms();
@@ -687,6 +694,26 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
             }
         }
         beams.retain(|b| !b.done(now, l.tap_speed));
+        // Day and night: only the sun's level is taken over (the app stops the run for the other rules); a
+        // level of 0 is left to the app too, which stops the run and darkens the keyboard.
+        if let Some(f) = power.as_mut().filter(|_| now >= next_level) {
+            next_level = now + LEVEL_MS;
+            let fresh = PowerState { daylight: f().daylight, ..p_now };
+            let want = lightctl::level(s, &fresh);
+            if want != lvl && want > 0 {
+                match send(dev.as_mut(), pauser, &lightctl::level_plan(want)) {
+                    Ok(n) => {
+                        sum.reports += n;
+                        lvl = want;
+                        p_now = fresh;
+                    }
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+            }
+        }
         if now >= next_write {
             let next = picture(now, (time)(), &mirror, &mut paint, &beams);
             let changed = delta(&shown, &next, 0);
@@ -711,7 +738,7 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
     }
     sum.ran_ms = clock.now_ms() - t0;
     drop(dev);
-    let restore = put_back(io);
+    let restore = put_back(io, &p_now, lvl);
     match (failed, restore) {
         (None, Ok(_)) => Ok(sum),
         (Some(e), Ok(a)) => Err(format!("live lighting stopped: {e}. The static colours were written back: {}", a.text())),
@@ -725,7 +752,8 @@ pub fn run(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Sho
 /// `keys` gives the key presses (LED ids) since the last call, for the key-press effect: the app's listener,
 /// or the command line's own.
 #[allow(clippy::too_many_arguments)]
-pub fn run_windows(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Shown, pauser: Option<&dyn Pauser>, clock: &mut dyn Clock, mut keys: Option<&mut dyn FnMut() -> Vec<u8>>, stop: &mut dyn FnMut(u64) -> bool) -> Result<String, String> {
+/// `power` gives the power state now, for day and night's level during the run.
+pub fn run_windows(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, prev: Shown, pauser: Option<&dyn Pauser>, clock: &mut dyn Clock, mut keys: Option<&mut dyn FnMut() -> Vec<u8>>, mut power: Option<&mut dyn FnMut() -> PowerState>, stop: &mut dyn FnMut(u64) -> bool) -> Result<String, String> {
     let plan = plan(s, p).ok_or("nothing to run")?;
     #[cfg(windows)]
     {
@@ -741,13 +769,14 @@ pub fn run_windows(io: &mut dyn LightIo, s: &LightingSettings, p: &PowerState, p
                 None => None,
             },
             keys: plan.needs_keys().then_some(&mut presses as &mut dyn FnMut() -> Vec<u8>),
+            power: power.as_mut().map(|f| &mut **f as &mut dyn FnMut() -> PowerState),
         };
         let sum = run(io, s, p, prev, pauser, plan, clock, src, stop)?;
         Ok(format!("Live lighting ran {:.0} s ({} writes); the static colours are back.", sum.ran_ms as f64 / 1_000.0, sum.frames))
     }
     #[cfg(not(windows))]
     {
-        let _ = (plan, keys.take());
+        let _ = (plan, keys.take(), power);
         Err(lightctl::WINDOWS_ONLY.into())
     }
 }
@@ -990,7 +1019,7 @@ mod tests {
             polls += 1;
             if polls % 50 == 1 && polls < 150 { vec![g] } else { vec![] }
         };
-        let src = Sources { time: &mut time, pointer: Some(&mut ptr), screen: None, keys: Some(&mut presses) };
+        let src = Sources { time: &mut time, pointer: Some(&mut ptr), screen: None, keys: Some(&mut presses), power: None };
         let sum = run(&mut FakeIo::default(), &s, &p, Shown::of(&s, &p), Some(&pz), plan, &mut Sim(0, pz.clone()), src, &mut |now| now >= 8_000).unwrap();
         assert!(sum.frames > 10 && sum.frames <= 12 * 8, "writes while beams and the trail move, at most 12 a second: {}", sum.frames);
         assert!(sum.keys / sum.frames.max(1) <= 30, "a few keys a write: {} keys in {} writes", sum.keys, sum.frames);
@@ -1042,7 +1071,7 @@ mod tests {
             let plan = plan(&s, &p).unwrap();
             let mut ptr = Rest;
             let mut time = || Hms { h: 9, m: 0, s: 0 };
-            let src = Sources { time: &mut time, pointer: Some(&mut ptr), screen: None, keys: None };
+            let src = Sources { time: &mut time, pointer: Some(&mut ptr), screen: None, keys: None, power: None };
             let sum = run(&mut FakeIo::default(), &s, &p, Shown::of(&s, &p), None, plan, &mut Sim(0, FakePauser::default()), src, &mut |now| now >= 5_000).unwrap();
             // Lit at once, then fading over the second (about 10 writes at 10 a second), then nothing more.
             assert!(sum.frames >= 5 && sum.frames <= 13, "{mouse}: the resting key fades and stops: {} writes", sum.frames);
@@ -1059,10 +1088,35 @@ mod tests {
             t += POLL_MS;
             Hms::from_secs(17 * 3_600 + 42 * 60 + 5 + t / 1_000)
         };
-        let src = Sources { time: &mut time, pointer: None, screen: None, keys: None };
+        let src = Sources { time: &mut time, pointer: None, screen: None, keys: None, power: None };
         let pz = FakePauser::default();
         let sum = run(&mut FakeIo::default(), &s, &off, Shown::of(&s, &off), None, plan, &mut Sim(0, pz), src, &mut |now| now >= 10_000).unwrap();
         // 5:42:05 to :15: still to :09, then the seconds view (:10 to :14) and back at :15.
         assert!(sum.frames <= 8, "a handful of writes: {}", sum.frames);
+    }
+
+    /// Day and night during a run: a new level goes out as one brightness report on the run's own handle,
+    /// the run carries on, and the colours written back at the end are at the new level.
+    #[test]
+    fn a_running_animation_takes_the_suns_level_without_stopping() {
+        let mut s = LightingSettings { clock_on_display_off: true, ..custom() };
+        s.daylight.on = true;
+        let off = PowerState { display_off: true, daylight: Some(100), ..Default::default() };
+        let plan = plan(&s, &off).unwrap();
+        let mut time = || Hms { h: 18, m: 0, s: 0 };
+        let sun = |now_pct: u32| PowerState { daylight: Some(now_pct), ..Default::default() };
+        let mut calls = 0u32;
+        let mut power = || {
+            calls += 1;
+            sun(if calls < 3 { 100 } else { 40 })
+        };
+        let src = Sources { time: &mut time, pointer: None, screen: None, keys: None, power: Some(&mut power) };
+        let io = FakeIo::default();
+        let sum = run(&mut io.clone(), &s, &off, Shown::of(&s, &off), None, plan, &mut Sim(0, FakePauser::default()), src, &mut |now| now >= 6_000).unwrap();
+        let sent = io.keyboard.sent();
+        let dim: Vec<Vec<u8>> = lightctl::level_plan(40).iter().filter_map(|x| x.report().map(|r| r.as_bytes().to_vec())).collect();
+        let at = sent.windows(dim.len()).position(|w| w == dim.as_slice()).expect("the 40 % report went out");
+        assert!(at > 0 && sum.frames == 0, "mid-run, with no frame needed (the clock stood still)");
+        assert_eq!(sent.last().unwrap(), dim.last().unwrap(), "the colours went back at 40 %, not 100 %");
     }
 }

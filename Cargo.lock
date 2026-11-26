@@ -42,6 +42,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
+ "webview2-com",
  "windows 0.62.2",
  "wiregent-hw",
  "wiregent-oem-alienware",

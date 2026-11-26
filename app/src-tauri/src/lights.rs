@@ -121,6 +121,11 @@ impl LiveGate {
         true
     }
 
+    /// An animation is running now (it takes day and night's level over itself).
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
     pub fn should_stop(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
@@ -220,6 +225,28 @@ pub fn apply_settings(shared: &Shared, s: &LightingSettings) -> Option<LastApply
         let a = lightctl::write_from(io, *shown, s, p, None)?;
         *shown = Shown::of(s, p);
         Ok(format!("Applied: {}", a.text()))
+    }))
+}
+
+/// Day and night's level into the power state now, before a write that should show it (start, a save).
+pub fn refresh_daylight(shared: &Shared, s: &LightingSettings) {
+    let pct = cockpit_core::daylight::now_pct(&s.daylight);
+    lock(shared).power.daylight = pct;
+}
+
+/// Day and night moved the level: the brightness alone is sent (colours, effects and the glow stay). A running
+/// live animation reads the level itself once a second and sends it between its frames, so nothing is written
+/// here then (a write would stop and restart it).
+pub fn apply_level(shared: &Shared, s: &LightingSettings) -> Option<LastApply> {
+    if s.mode != Mode::Custom || LIVE.is_running() {
+        return None;
+    }
+    Some(write_with(shared, s.pause_awcc, Glow::Resync(s), |io, p, shown| {
+        let lvl = lightctl::level(s, p);
+        let mut dev = io.keyboard()?;
+        lightctl::apply(dev.as_mut(), &lightctl::level_plan(lvl), None)?;
+        shown.level = lvl;
+        Ok(format!("Day and night: brightness {lvl}%."))
     }))
 }
 

@@ -12,9 +12,11 @@ mod live;
 mod lights;
 mod processes;
 mod source;
+mod visibility;
 
 // Settings, the emergency rule as the app runs it, the daily log and the AWCC readers live in cockpit-core,
 // shared with the `cockpit` command line.
+use cockpit_core::daylight::{self, DaylightSettings};
 use cockpit_core::lightctl::{self, LightAction, LightingSettings, LightingStatus, Mode, PowerEvent};
 use cockpit_core::{emergency_step, games, hottest, lighting, log, record_switch, route_for, Modes, Raised, EMERGENCY_HOLD};
 pub use cockpit_core::{Effects, Settings, PROFILES};
@@ -181,6 +183,7 @@ async fn lighting_set(app: State<'_, App>, settings: LightingSettings) -> Result
     save_lighting(&app, &settings)?;
     let (light, found) = (app.light.clone(), app.keyboard_found.clone());
     tauri::async_runtime::spawn_blocking(move || {
+        lights::refresh_daylight(&light, &settings);
         lights::apply_settings(&light, &settings);
         lights::status(&light, &settings, &found)
     })
@@ -236,6 +239,9 @@ fn lighting_power_event(handle: &AppHandle, ev: PowerEvent) {
         LightAction::Dark => {
             lights::apply_settings(&app.light, &s);
         }
+        LightAction::Level => {
+            lights::apply_level(&app.light, &s);
+        }
         LightAction::Reapply { after_ms } => {
             let h = handle.clone();
             std::thread::spawn(move || {
@@ -247,6 +253,20 @@ fn lighting_power_event(handle: &AppHandle, ev: PowerEvent) {
         }
     }
 }
+
+/// Day and night for the Lighting page: today's sun where you are and the brightness through the day, for
+/// these (possibly unsaved) settings, and the cities to choose from.
+#[tauri::command]
+async fn daylight_today(daylight: DaylightSettings) -> Result<Value, String> {
+    daylight.validate()?;
+    let today = tauri::async_runtime::spawn_blocking(move || daylight::today(&daylight)).await.map_err(|e| e.to_string())?;
+    let mut cities: Vec<&str> = daylight::CITIES.iter().map(|c| c.name).collect();
+    cities.sort_unstable();
+    Ok(json!({ "today": today, "cities": cities }))
+}
+
+/// How often day and night looks at the sun, s: a level changes by about 1 % a tick through dawn and dusk.
+const DAYLIGHT_TICK_S: u64 = 30;
 
 #[tauri::command]
 async fn game_library() -> Value {
@@ -549,8 +569,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)))
         .plugin(tauri_plugin_notification::init())
+        .on_window_event(visibility::on_event)
         .manage(App { readings: readings.clone(), modes: Arc::new(Mutex::new(Modes::default())), demo: demo.clone(), settings: Mutex::new(settings), health: Mutex::new(None), status_item: Mutex::new(None), light: Default::default(), keyboard_found: Default::default(), #[cfg(windows)] clocks: Default::default() })
-        .invoke_handler(tauri::generate_handler![status, history, clocks, health, drift, lighting, lighting_status, lighting_set, lighting_preview_key, lighting_restore_awcc, lighting_import_awcc, game_library, settings_get, settings_set, controls, set_mode, set_fan_boost, log_days, log_read, log_cleanup, open_alienware_update, restart_elevated])
+        .invoke_handler(tauri::generate_handler![status, history, clocks, health, drift, lighting, lighting_status, lighting_set, lighting_preview_key, lighting_restore_awcc, lighting_import_awcc, daylight_today, game_library, settings_get, settings_set, controls, set_mode, set_fan_boost, log_days, log_read, log_cleanup, open_alienware_update, restart_elevated])
         .setup(move |app| {
             if let Err(e) = install_tray(app.handle()) {
                 eprintln!("tray icon unavailable: {e}");
@@ -674,6 +695,7 @@ pub fn run() {
                 if s.mode == Mode::Custom {
                     std::thread::sleep(Duration::from_millis(lightctl::RESUME_DELAY_MS));
                     let s = app.settings.lock().unwrap().lighting.clone();
+                    lights::refresh_daylight(&app.light, &s);
                     lights::apply_settings(&app.light, &s);
                 }
             });
@@ -688,6 +710,15 @@ pub fn run() {
                     }
                 });
             }
+            // Day and night: the sun's level every 30 s into the power rules (a brightness report when it moved;
+            // nothing at all while it's off or the lighting is AWCC's).
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(DAYLIGHT_TICK_S));
+                let s = handle.state::<App>().settings.lock().unwrap().lighting.clone();
+                let pct = daylight::now_pct(&s.daylight);
+                lighting_power_event(&handle, PowerEvent::Daylight { pct });
+            });
             // The daily log: the latest reading every `every_s`, cleanup at start and when the day changes.
             let handle = app.handle().clone();
             std::thread::spawn(move || {

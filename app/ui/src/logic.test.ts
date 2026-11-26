@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_AWCC_KEYS, DEMO_LAYOUT, type Fan, type KeyboardLight, type KeyInfo, type LightingSettings, type ReactiveSettings, type Snapshot, type Status } from './api';
 import {
-  alertText, BLADES, composeKey, usedColour, usedGlow, LIVE_DEFAULTS, LIVE_KINDS, liveOf, liveSummary, MOUSE_MODES, TAP_KINDS, toggleTap, REACTIVE_DEFAULTS, reactiveOf, debounce, dimHex, drawnRevPerSec, EFFECTS, fanFlag, groupMembers, importAwcc, inkOn, isHex, keyAt, keysAlong, keysInRect, lightingProblem,
-  MAX_DRAWN_REV_PER_S, MAX_FRAME_S, mergeHistory, mostCommon, normHex, palette, rotorPercent, shownColors, stoppedZones, stuckFans, toggleKey, verdict, zoneName,
+  alertText, BLADES, composeKey, fanLayout, DAYLIGHT_DEFAULTS, dayLength, daylightOf, sunBands, usedColour, usedGlow, LIVE_DEFAULTS, LIVE_KINDS, liveOf, liveSummary, MOUSE_MODES, TAP_KINDS, toggleTap, REACTIVE_DEFAULTS, reactiveOf, debounce, dimHex, drawnRevPerSec, EFFECTS, fanFlag, groupMembers, importAwcc, inkOn, isHex, keyAt, keysAlong, keysInRect, lightingProblem,
+  MAX_DRAWN_REV_PER_S, MAX_FRAME_S, matchCommands, mergeHistory, modeChanges, nearestBoost, queryNumber, mostCommon, normHex, palette, rotorPercent, shownColors, stoppedZones, stuckFans, toggleKey, verdict, zoneName,
 } from './logic';
 
 // The x17 R2 as the reader reports it: sensor 0x01 (CPU) with fans 0x32 and 0x3B, sensor 0x06 (GPU) with 0x33 and 0x3C.
@@ -391,5 +391,69 @@ describe('the x17 R2 keyboard layout (owner photo, 2026-11-24)', () => {
     expect([at(114).row, at(114).col]).toEqual([4, 14]);
     expect([at(134).row, at(134).col]).toEqual([5, 14]);
     expect([15, 19, 16, 18, 17, 135].map((id) => [at(id).row, at(id).col])).toEqual([[0, 15], [1, 15], [2, 15], [3, 15], [4, 15], [5, 15]]);
+  });
+});
+
+describe('the Timeline and Ctrl K', () => {
+  it('marks where the thermal mode changes, ignoring readings without one', () => {
+    const p = (profile: string | null) => ({ profile });
+    expect(modeChanges([p('Balanced'), p(null), p('Balanced'), p('G-Mode'), p('G-Mode'), p(null), p('Balanced')])).toEqual([
+      { i: 3, from: 'Balanced', to: 'G-Mode' },
+      { i: 6, from: 'G-Mode', to: 'Balanced' },
+    ]);
+    expect(modeChanges([])).toEqual([]);
+  });
+
+  it('finds commands by every word, numbers aside, and reads the number', () => {
+    const cmds = [
+      { id: 'boost', group: 'Do it', title: 'Fan boost on all fans', words: 'fans cooling' },
+      { id: 'g', group: 'Modes', title: 'G-Mode', hint: 'what the boost key toggles' },
+      { id: 'light', group: 'Pages', title: 'Lighting' },
+    ];
+    expect(matchCommands(cmds, 'boost 50').map((c) => c.id)).toEqual(['boost', 'g']);
+    expect(matchCommands(cmds, 'BOOST fans').map((c) => c.id)).toEqual(['boost']);
+    expect(matchCommands(cmds, '').length).toBe(3);
+    expect(matchCommands(cmds, 'nothing')).toEqual([]);
+    expect(queryNumber('boost 50')).toBe(50);
+    expect(queryNumber('boost +75%')).toBe(75);
+    expect(queryNumber('g-mode')).toBeNull();
+    expect([nearestBoost(10), nearestBoost(13), nearestBoost(60), nearestBoost(100)]).toEqual([0, 25, 50, 100]);
+  });
+});
+
+describe('day and night', () => {
+  it('fills defaults for older settings and checks its ranges', () => {
+    const s = { mode: 'custom', keyboard: { on: true, brightness: 70, effect: 'static', tempo: 128, color: '#FFFFFF', color2: '#000000', groups: {}, keys: {} }, zones: {}, offOnSleep: true, offOnLidClose: true, offOnDisplayOff: true, dimOnBatterySaver: false, pauseAwcc: true } as LightingSettings;
+    expect(daylightOf(s)).toEqual(DAYLIGHT_DEFAULTS);
+    expect(daylightOf({ ...s, daylight: { ...DAYLIGHT_DEFAULTS, on: true, night: 0 } }).night).toBe(0);
+    expect(lightingProblem({ ...s, daylight: { ...DAYLIGHT_DEFAULTS, night: 120 } }, [], [])).toMatch(/Night brightness/);
+    expect(lightingProblem({ ...s, daylight: { ...DAYLIGHT_DEFAULTS, place: 'custom', lat: 95 } }, [], [])).toMatch(/Latitude/);
+    expect(lightingProblem({ ...s, daylight: { ...DAYLIGHT_DEFAULTS, on: true } }, [], [])).toBeNull();
+  });
+
+  it('splits the day into night, twilight and day by the sun', () => {
+    const h = 3_600_000;
+    const curve: [number, number, number][] = [[0, 25, -40], [5 * h, 25, -10], [6 * h, 60, 0], [7 * h, 100, 10], [17 * h, 100, 10], [18 * h, 60, -1], [19 * h, 25, -10], [24 * h, 25, -40]];
+    expect(sunBands(curve).map((b) => [b.kind, b.from / h, b.to / h])).toEqual([
+      ['night', 0, 5], ['twilight', 5, 7], ['day', 7, 17], ['twilight', 17, 19], ['night', 19, 24],
+    ]);
+    expect([dayLength(652), dayLength(0), dayLength(1440)]).toEqual(['10 h 52 min of daylight', 'no sunrise today', 'the sun up all day']);
+  });
+});
+
+describe('the fans where they sit', () => {
+  const fan = (id: number, sensor: number, max: number | null) => ({ id, sensor, rpm: 2000, max_rpm: max });
+  it('puts the x17 R2 fans in their places, primaries at the rear corners', () => {
+    const slots = fanLayout([fan(0x32, 1, 4200), fan(0x33, 6, 4100), fan(0x3b, 1, 3000), fan(0x3c, 6, 3000)])!;
+    expect(slots.map((s) => [s.fan.id.toString(16), s.side, s.row, s.primary, s.name])).toEqual([
+      ['33', 'left', 'rear', true, 'Graphics fan 1'], ['3c', 'left', 'front', false, 'Graphics fan 2'],
+      ['32', 'right', 'rear', true, 'Processor fan 1'], ['3b', 'right', 'front', false, 'Processor fan 2'],
+    ]);
+  });
+  it('takes the faster fan as the primary, and falls back to a row on other machines', () => {
+    const slots = fanLayout([fan(0x3b, 1, 4500), fan(0x32, 1, 3000), fan(0x33, 6, null), fan(0x3c, 6, null)])!;
+    expect(slots.filter((s) => s.primary).map((s) => s.fan.id)).toEqual([0x33, 0x3b]);
+    expect(fanLayout([fan(0x32, 1, 4200), fan(0x33, 6, 4100)])).toBeNull();
+    expect(fanLayout([fan(0x32, 1, 1), fan(0x33, 1, 1), fan(0x3b, 1, 1), fan(0x3c, 6, 1)])).toBeNull();
   });
 });

@@ -5,6 +5,7 @@
 //! - [`log`]: the daily log (one JSON-lines file a day) and its cleanup.
 //! - [`lighting`], [`games`]: AWCC's lighting database and game library, read-only (Windows).
 //! - [`lightctl`]: keyboard lighting control: its settings, what a write sends, the power rules.
+//! - [`daylight`]: day and night: the sun's position where you are, and the brightness it asks for.
 //! - [`reactive`]: the reactive glow: keys warm up as they are pressed (model, delta frames, the runner).
 //! - [`keyinput`]: key-downs to LED ids (pure) and the read-only Raw Input listener (Windows).
 //! - [`boostkey`]: what a press of the boost key does with the current settings.
@@ -16,6 +17,7 @@
 pub mod autostart;
 pub mod boostkey;
 pub mod clock;
+pub mod daylight;
 pub mod games;
 pub mod keyinput;
 pub mod lightctl;

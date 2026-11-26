@@ -1,6 +1,6 @@
 // The screens' decisions, kept out of the components so they can be tested on their own (logic.test.ts).
 
-import { hex, sensorName, type Alert, type Fan, type KeyboardLight, type KeyEffect, type KeyInfo, type LightingSettings, type LiveKind, type LiveSettings, type MouseMode, type TapKind, type ReactiveSettings, type Rgb, type Snapshot, type Status } from './api';
+import { hex, sensorName, type Alert, type DaylightSettings, type Fan, type KeyboardLight, type KeyEffect, type KeyInfo, type LightingSettings, type LiveKind, type LiveSettings, type MouseMode, type TapKind, type ReactiveSettings, type Rgb, type Snapshot, type Status } from './api';
 
 /** Above this a sensor counts as hot for the fan checks (the reader's fan rules use the same 80 °C). */
 export const HOT_C = 80;
@@ -78,12 +78,30 @@ export function rotorPercent(rpm: number | null, max: number | null): number | n
  * close to a whole gap per frame looks frozen or backwards (the wagon-wheel strobe). */
 export const BLADES = 11;
 export const MAX_DRAWN_REV_PER_S = 2;
-/** The longest frame the animation advances by; a slower frame just shows less motion. */
+/** The slowest frame rate the rotors are judged at: the compositor turns them at the display's refresh (60 or
+ * 120 Hz); at 48 frames a second or more a blade still moves under half a gap per frame, so a few dropped frames
+ * never strobe. */
 export const MAX_FRAME_S = 1 / 48;
 
 /** Drawn revolutions per second for a real speed: rises with RPM, capped, and never strobes. */
 export function drawnRevPerSec(rpm: number | null): number {
   return MAX_DRAWN_REV_PER_S * Math.pow(Math.min(1, Math.max(0, rpm ?? 0) / 5000), 0.7);
+}
+
+/** A fan's place in the laptop, seen from above as you sit. */
+export type FanSlot = { fan: Fan; side: 'left' | 'right'; row: 'rear' | 'front'; primary: boolean; name: string };
+
+/** Where each fan sits in the x17 R2, from Dell's fan guide (kbdoc 000203463: a photo from below with the rear at
+ * the top, so its left and right are swapped here): the graphics card's two fans on the left, the processor's
+ * two on the right, each side's primary (the larger, faster one: the higher reported maximum, then the lower id;
+ * Dell's "Fan 1") at the rear corner and its secondary just in front. `null` when the fans aren't two per sensor
+ * on the CPU (0x01) and GPU (0x06) sensors, as on another machine: they are then shown in a row. */
+export function fanLayout(fans: Fan[]): FanSlot[] | null {
+  const of = (sensor: number) => fans.filter((f) => f.sensor === sensor).sort((a, b) => (b.max_rpm ?? 0) - (a.max_rpm ?? 0) || a.id - b.id);
+  const cpu = of(1), gpu = of(6);
+  if (fans.length !== 4 || cpu.length !== 2 || gpu.length !== 2) return null;
+  const slot = (f: Fan, side: FanSlot['side'], i: number, kind: string): FanSlot => ({ fan: f, side, row: i === 0 ? 'rear' : 'front', primary: i === 0, name: `${kind} fan ${i + 1}` });
+  return [...gpu.map((f, i) => slot(f, 'left', i, 'Graphics')), ...cpu.map((f, i) => slot(f, 'right', i, 'Processor'))];
 }
 
 /** Fans whose speed reading hasn't moved over the recent history while a partner fan on the same sensor
@@ -232,6 +250,32 @@ export const liveOf = (s: LightingSettings): LiveSettings => {
   const l = { ...LIVE_DEFAULTS, ...s.live };
   return l.kind === 'mouse' ? { ...l, kind: 'off', mouse: l.look } : l;
 };
+
+/** Day and night as the app starts it: off, full brightness by day, a quarter at night, the time zone's city. */
+export const DAYLIGHT_DEFAULTS: DaylightSettings = { on: false, day: 100, night: 25, place: 'auto', lat: 0, lon: 0 };
+export const daylightOf = (s: LightingSettings): DaylightSettings => ({ ...DAYLIGHT_DEFAULTS, ...s.daylight });
+
+export type SunBand = { from: number; to: number; kind: 'night' | 'twilight' | 'day' };
+/** Today's curve as night, twilight and day stretches (by the sun's height at each stretch's middle: below
+ * -6° night, from +6° day), neighbours of one kind merged. */
+export function sunBands(curve: [number, number, number][]): SunBand[] {
+  const out: SunBand[] = [];
+  for (let i = 0; i + 1 < curve.length; i++) {
+    const el = (curve[i][2] + curve[i + 1][2]) / 2;
+    const kind = el <= -6 ? 'night' : el >= 6 ? 'day' : 'twilight';
+    const last = out[out.length - 1];
+    if (last && last.kind === kind) last.to = curve[i + 1][0];
+    else out.push({ from: curve[i][0], to: curve[i + 1][0], kind });
+  }
+  return out;
+}
+
+/** "10 h 52 min" of daylight. */
+export function dayLength(min: number): string {
+  if (min >= 1440) return 'the sun up all day';
+  if (min <= 0) return 'no sunrise today';
+  return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min of daylight`;
+}
 
 /** The effects the app draws (layer 2, with the keyboard's own effects), worded plainly. */
 export const LIVE_KINDS: { id: LiveKind; name: string; what: string }[] = [
@@ -394,6 +438,12 @@ export function lightingProblem(s: LightingSettings, layout: KeyInfo[], groups: 
     if (!Number.isInteger(l.tapFps) || l.tapFps < 1 || l.tapFps > 30) return `Key-press effects write 1 to 30 times a second, not ${l.tapFps}.`;
 
   }
+  if (s.daylight) {
+    const d = daylightOf(s);
+    for (const [what, v] of [['Daytime', d.day], ['Night', d.night]] as const) if (!Number.isInteger(v) || v < 0 || v > 100) return `${what} brightness must be 0 to 100 %, not ${v}.`;
+    if (!(Math.abs(d.lat) <= 90)) return `Latitude must be -90 to 90, not ${d.lat}.`;
+    if (!(Math.abs(d.lon) <= 180)) return `Longitude must be -180 to 180, not ${d.lon}.`;
+  }
   return null;
 }
 
@@ -404,4 +454,41 @@ export function zoneLabel(id: number): string {
   if (id >= 10 && id <= 14) return `Left ${id - 9}`;
   if (id >= 15 && id <= 19) return `Right ${id - 14}`;
   return `Light ${id}`;
+}
+
+/** Where the thermal mode changes in a run of readings (the Timeline's marks): each index whose mode differs
+ * from the last known one before it. Readings without a mode don't end a run. */
+export function modeChanges(points: { profile: string | null }[]): { i: number; from: string; to: string }[] {
+  const out: { i: number; from: string; to: string }[] = [];
+  let last: string | null = null;
+  points.forEach((p, i) => {
+    if (p.profile == null) return;
+    if (last != null && p.profile !== last) out.push({ i, from: last, to: p.profile });
+    last = p.profile;
+  });
+  return out;
+}
+
+/** A Ctrl K command: what it says, words it also answers to, and what it does. */
+export interface Command { id: string; group: string; title: string; hint?: string; words?: string }
+
+/** The commands that answer `query`: every word of it (numbers aside) is in the title, hint or extra words.
+ * Keeps the given order (it puts the likeliest first); an empty query answers with all. */
+export function matchCommands<C extends Command>(commands: C[], query: string, max = 12): C[] {
+  const words = query.toLowerCase().split(/\s+/).filter((w) => w && !/^[+-]?\d+%?$/.test(w));
+  return commands.filter((c) => {
+    const hay = `${c.title} ${c.hint ?? ''} ${c.words ?? ''}`.toLowerCase();
+    return words.every((w) => hay.includes(w));
+  }).slice(0, max);
+}
+
+/** The number in a query ("boost 50" → 50), or null. */
+export function queryNumber(query: string): number | null {
+  const m = query.match(/(?:^|\s)[+-]?(\d{1,3})%?(?:\s|$)/);
+  return m ? Number(m[1]) : null;
+}
+
+/** The fan boost level a number asks for: the nearest of Off, +25, +50, +75 and Max. */
+export function nearestBoost(n: number): number {
+  return [0, 25, 50, 75, 100].reduce((best, l) => (Math.abs(l - n) < Math.abs(best - n) ? l : best), 0);
 }

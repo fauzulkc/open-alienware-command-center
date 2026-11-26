@@ -1,9 +1,9 @@
 // The Lighting page: the keyboard's colours per key, brightness and effects, when it goes dark, and the zone
 // lights. Contract: docs/lighting-control.md. The decisions live in logic.ts.
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { api, type KeyboardLight, type KeyEffect, type KeyInfo, type LightingSettings, type LightingStatus, type LiveSettings, type Rgb } from './api';
+import { api, type DaylightSettings, type KeyboardLight, type KeyEffect, type KeyInfo, type LightingSettings, type LightingStatus, type LiveSettings, type Rgb, type SunToday } from './api';
 import { Section, Tip } from './components';
-import { debounce, effectInfo, EFFECTS, groupMembers, LIVE_KINDS, liveOf, liveSummary, MOUSE_MODES, TAP_KINDS, toggleTap, keyAt, keysAlong, keysInRect, normHex, palette, selectionColor, shownColors, toggleKey, unionKeys, zoneLabel } from './logic';
+import { dayLength, daylightOf, debounce, effectInfo, sunBands, EFFECTS, groupMembers, LIVE_KINDS, liveOf, liveSummary, MOUSE_MODES, TAP_KINDS, toggleTap, keyAt, keysAlong, keysInRect, normHex, palette, selectionColor, shownColors, toggleKey, unionKeys, zoneLabel } from './logic';
 
 /** Live preview writes one key per call, so only small selections preview while the colour moves; bigger ones
  * show on the keyboard when the change is saved (250 ms after it stops). */
@@ -192,6 +192,130 @@ function Switch({ checked, onChange, name, what }: { checked: boolean; onChange:
   );
 }
 
+// ---------------------------------------------------------------- day and night
+
+const hm = (ms: number | null) => (ms == null ? '—' : new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+const PHASE: Record<SunToday['phase'], string> = { day: 'Daytime', night: 'Night', dawn: 'Dawn', dusk: 'Dusk' };
+
+/** Today's brightness against the sun: night, twilight and day behind, the level as a line, now marked. */
+function SunChart({ today, on }: { today: SunToday; on: boolean }) {
+  const W = 960, H = 170, top = 22, bottom = 24, ph = H - top - bottom;
+  const x = (t: number) => ((t - today.dayStart) / 86_400_000) * W;
+  const y = (p: number) => top + (1 - p / 100) * ph;
+  const pts = today.curve.map(([t, p]) => `${x(t).toFixed(1)},${y(p).toFixed(1)}`);
+  const line = `M${pts.join('L')}`;
+  const area = `${line}L${W},${top + ph}L0,${top + ph}Z`;
+  const nx = x(today.now);
+  const marks = [
+    { t: today.sunrise, label: `↑ ${hm(today.sunrise)}` },
+    { t: today.sunset, label: `↓ ${hm(today.sunset)}` },
+  ].filter((m): m is { t: number; label: string } => m.t != null);
+  return (
+    <div className={`dn-chart ${on ? '' : 'off'}`}>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Keyboard brightness through today: ${today.curve[0][1]}% at midnight, ${today.nowPct}% now`}>
+        {sunBands(today.curve).map((b) => <rect key={b.from} x={x(b.from)} y={top} width={x(b.to) - x(b.from)} height={ph} className={`dn-${b.kind}`} />)}
+        <path d={area} className="dn-area" />
+        <path d={line} className="dn-line" />
+        {marks.map((m) => (
+          <g key={m.label}>
+            <line x1={x(m.t)} x2={x(m.t)} y1={top} y2={top + ph} className="dn-mark" />
+            <text x={x(m.t)} y={top - 7} className="dn-t" textAnchor="middle">{m.label}</text>
+          </g>
+        ))}
+        {nx >= 0 && nx <= W && (
+          <g>
+            <line x1={nx} x2={nx} y1={top} y2={top + ph} className="dn-now" />
+            <circle cx={nx} cy={y(today.nowPct)} r={5} className="dn-dot" />
+          </g>
+        )}
+        {[0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => (
+          <text key={h} x={Math.min(W - 12, Math.max(12, (h / 24) * W))} y={H - 6} className="dn-t" textAnchor="middle">{String(h).padStart(2, '0')}</text>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+/** A number typed in, committed on Enter or leaving the field. */
+function NumField({ label, value, min, max, onCommit }: { label: string; value: number; min: number; max: number; onCommit: (v: number) => void }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  const v = Number(text);
+  const ok = text.trim() !== '' && Number.isFinite(v) && v >= min && v <= max;
+  const commit = () => (ok && v !== value ? onCommit(Math.round(v * 100) / 100) : setText(String(value)));
+  return (
+    <label className="field dn-num">
+      <span className="lbl">{label}</span>
+      <input className={`hexin ${ok ? '' : 'bad'}`} inputMode="decimal" value={text} onChange={(e) => setText(e.target.value)} onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setText(String(value)); }} />
+    </label>
+  );
+}
+
+function DayNight({ d, sun, cities, err, set, commit, brightness, custom }: {
+  d: DaylightSettings; sun: SunToday | null; cities: string[]; err: string | null; brightness: number; custom: boolean;
+  set: (p: Partial<DaylightSettings>, now?: boolean) => void; commit: () => void;
+}) {
+  const where = sun?.place;
+  const auto = !where ? 'From the time zone' : where.from === 'estimate' ? 'From the time zone (no city for it)' : `From the time zone · ${d.place === 'auto' ? where.name : 'its city'}`;
+  return (
+    <div className="dn">
+      <div className="lt-stack">
+        <Switch checked={d.on} onChange={(v) => set({ on: v }, true)} name="Follow the sun"
+          what="Brighter by day, dimmer after dark, easing through dawn and dusk. While it's on it sets the brightness." />
+        <label className="field">
+          <span className="lbl">Daytime {d.day}%</span>
+          <input type="range" min={0} max={100} value={d.day} onChange={(e) => set({ day: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+        </label>
+        <label className="field">
+          <span className="lbl">Night {d.night === 0 ? 'off' : `${d.night}%`}</span>
+          <input type="range" min={0} max={100} value={d.night} onChange={(e) => set({ night: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+        </label>
+        <label className="field">
+          <span className="lbl">Where you are</span>
+          <select value={d.place} onChange={(e) => set({ place: e.target.value }, true)}>
+            <option value="auto">{auto}</option>
+            <optgroup label="Cities">{cities.map((c) => <option key={c} value={c}>{c}</option>)}</optgroup>
+            <option value="custom">Latitude and longitude…</option>
+          </select>
+        </label>
+        {d.place === 'custom' && (
+          <div className="row dn-ll">
+            <NumField label="Latitude °N" value={d.lat} min={-90} max={90} onCommit={(v) => set({ lat: v }, true)} />
+            <NumField label="Longitude °E" value={d.lon} min={-180} max={180} onCommit={(v) => set({ lon: v }, true)} />
+          </div>
+        )}
+        <small className="muted">
+          {where?.from === 'estimate' ? 'Your time zone has no city, so sunrise and sunset are a guess: choose a city or type your coordinates.'
+            : where?.from === 'zone' ? `${where.name} stands for your clock's time zone${where.zone ? ` (${where.zone})` : ''}. Far from there? Choose a nearer city or type your coordinates.`
+            : 'Worked out on this laptop from the date and the place: nothing is looked up online.'}
+        </small>
+      </div>
+      <div>
+        {err && <p className="m-res bad">{err}</p>}
+        {sun ? (
+          <>
+            <div className="dn-head">
+              <span className="dn-big">{d.on ? `${sun.nowPct}%` : `${brightness}%`}</span>
+              <span className="chip">{PHASE[sun.phase]} · sun {sun.elevation >= 0 ? `${sun.elevation.toFixed(0)}° up` : `${(-sun.elevation).toFixed(0)}° down`}</span>
+              <span className="muted small">{!custom ? 'Applies in Custom.' : d.on ? 'now, and it follows the line below' : 'stays at your brightness while this is off; the line is what it would do today'}</span>
+            </div>
+            <SunChart today={sun} on={d.on} />
+            <div className="dn-facts">
+              <span>Sunrise <b>{hm(sun.sunrise)}</b></span>
+              <span>Sunset <b>{hm(sun.sunset)}</b></span>
+              <span>{dayLength(sun.dayMin)}</span>
+              <span>First light <b>{hm(sun.dawn)}</b> · last light <b>{hm(sun.dusk)}</b></span>
+              <span>{sun.place.name} · {Math.abs(sun.place.lat).toFixed(1)}°{sun.place.lat >= 0 ? 'N' : 'S'}</span>
+            </div>
+            <p className="muted small">Night from last light to first light, full daytime once the sun is 6° up, and a gentle blend in between: a small step about every 30 seconds. The times move with the seasons. Live effects keep running through the change.</p>
+          </>
+        ) : !err && <p className="muted">Working out today's sun…</p>}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- the page
 
 type Problem = { text: string; rolledBack: boolean };
@@ -207,6 +331,11 @@ export function Lighting() {
   const [sel, setSel] = useState<number[]>([]);
   const [tool, setTool] = useState<'select' | 'paint'>('select');
   const [brush, setBrush] = useState<Rgb>('#FF00FF');
+  // Which layer's controls show beside the map (the redesign, 2026-11-25): top draws over bottom.
+  const [layer, setLayer] = useState<'live' | 'effect' | 'base'>('live');
+  // Day and night: today's sun for the settings on the page (saved or not), refreshed every minute.
+  const [sun, setSun] = useState<{ today: SunToday; cities: string[] } | null>(null);
+  const [sunErr, setSunErr] = useState<string | null>(null);
 
   const setDraft = (s: LightingSettings) => { draftRef.current = s; setDraftState(s); };
   const take = (s: LightingStatus) => { saved.current = s.settings; setSt(s); };
@@ -250,6 +379,21 @@ export function Lighting() {
     return () => { live = false; saver.flush(); preview.cancel(); };
   }, [saver, preview]);
 
+  const dl = draft ? daylightOf(draft) : null;
+  const dlKey = dl ? JSON.stringify(dl) : '';
+  useEffect(() => {
+    if (!dl) return;
+    let live = true;
+    const load = () => {
+      if (document.hidden) return;
+      api.daylightToday(dl).then((r) => { if (live) { setSun(r); setSunErr(null); } }, (e) => { if (live) setSunErr(String(e)); });
+    };
+    const first = setTimeout(load, 150);
+    const every = setInterval(load, 60_000);
+    return () => { live = false; clearTimeout(first); clearInterval(every); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dlKey]);
+
   const update = (next: LightingSettings, now = false) => {
     setDraft(next);
     saver.schedule(next);
@@ -270,6 +414,10 @@ export function Lighting() {
     const app = id === 'clock' || id === 'screen';
     const effect: KeyEffect = app || id === 'none' ? 'static' : id;
     update({ ...d, keyboard: { ...d.keyboard, effect }, live: { ...liveOf(d), kind: app ? id : 'off' } }, true);
+  };
+  const setDaylight = (patch: Partial<DaylightSettings>, now = false) => {
+    const d = draftRef.current;
+    if (d) update({ ...d, daylight: { ...daylightOf(d), ...patch } }, now);
   };
   const commit = () => saver.flush();
   const canPreview = () => draftRef.current?.mode === 'custom' && draftRef.current.keyboard.effect === 'static';
@@ -358,7 +506,9 @@ export function Lighting() {
   const custom = draft.mode === 'custom';
   const fx = effectInfo(kb.effect);
   const perKey = custom && kb.effect === 'static';
-  const colors = custom ? shownColors(layout, kb) : st.awcc ? st.awcc.keys : shownColors(layout, kb);
+  const sunOn = custom && dl != null && dl.on && sun != null;
+  const shownLevel = sunOn ? sun.today.nowPct : kb.brightness;
+  const colors = custom ? shownColors(layout, { ...kb, brightness: shownLevel }) : st.awcc ? st.awcc.keys : shownColors(layout, kb);
   const selColour = selectionColor(layout, kb, sel);
   const isGroup = (g: string) => { const m = groupMembers(layout, g); return m.length > 0 && m.length === sel.length && m.every((id) => sel.includes(id)); };
   const own = sel.filter((id) => kb.keys[id] != null).length;
@@ -371,34 +521,186 @@ export function Lighting() {
   const mouseMode = MOUSE_MODES.find((k) => k.id === live.mouse) ?? MOUSE_MODES[0];
   const liveNow = liveSummary(live);
   const displayOff = draft.clockOnDisplayOff ? 'clock' : draft.offOnDisplayOff ? 'dark' : 'keep';
+  const effectName = effectId === 'none' ? 'None' : effectId === 'clock' ? 'Clock' : effectId === 'screen' ? 'Screen mirror' : fx.name;
+  const layers = [
+    { id: 'live' as const, n: 3, name: 'Live interactions', sum: hardware ? `Resting while ${fx.name} runs` : liveNow || 'Off' },
+    { id: 'effect' as const, n: 2, name: 'Effect', sum: effectName },
+    { id: 'base' as const, n: 1, name: 'Base profile', sum: kb.on ? `${perKey ? 'Per key' : 'Whole keyboard'} · ${sunOn ? `${shownLevel}% by the sun` : `${kb.brightness}%`}` : 'Backlight off' },
+  ];
+
+  const baseBlock = (
+    <>
+      <div className="lt-stack">
+        <Switch checked={kb.on} onChange={(v) => setKb({ on: v }, true)} name={kb.on ? 'Backlight on' : 'Backlight off'} what="Off keeps every colour for when it's back on." />
+        <label className="field">
+          <span className="lbl">Brightness {sunOn ? `${shownLevel}% · set by the sun` : `${kb.brightness}%`}</span>
+          <input type="range" min={0} max={100} value={sunOn ? shownLevel : kb.brightness} disabled={!kb.on || sunOn}
+            onChange={(e) => setKb({ brightness: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+          {sunOn && <small className="muted">Day and night sets it (below the map). Turn that off to set it here.</small>}
+        </label>
+        <div className="field">
+          <span className="lbl">Base colour</span>
+          <ColourField label="Base colour" value={kb.color} onChange={(c) => setKb({ color: c })} onCommit={commit} />
+          <small className="muted">{hardware ? `The colour ${fx.name.toLowerCase()} uses.` : 'For keys without their own or a group colour.'}</small>
+        </div>
+      </div>
+      <p className="muted small">Your colours on the map are the base profile. The effect and the live interactions draw over them.</p>
+    </>
+  );
+
+  const effectBlock = (
+    <>
+      <div className="seg small lt-seg" role="radiogroup" aria-label="Effect">
+        <button role="radio" aria-checked={effectId === 'none'} className={effectId === 'none' ? 'on' : ''} onClick={() => pickEffect('none')}>None</button>
+        <button role="radio" aria-checked={effectId === 'clock'} className={effectId === 'clock' ? 'on' : ''} onClick={() => pickEffect('clock')}>Clock</button>
+        <button role="radio" aria-checked={effectId === 'screen'} className={effectId === 'screen' ? 'on' : ''} onClick={() => pickEffect('screen')}>Screen mirror</button>
+        {EFFECTS.filter((e) => e.id !== 'static').map((e) => <button key={e.id} role="radio" aria-checked={effectId === e.id} className={effectId === e.id ? 'on' : ''} onClick={() => pickEffect(e.id)}>{e.name}</button>)}
+      </div>
+      <p className="small">{effectWhat}</p>
+      {hardware && (fx.tempo || fx.color2) && (
+        <div className="lt-stack">
+          {fx.tempo && (
+            <label className="field">
+              <span className="lbl">Tempo {kb.tempo}</span>
+              <input type="range" min={0} max={255} value={kb.tempo} onChange={(e) => setKb({ tempo: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+            </label>
+          )}
+          {fx.color2 && (
+            <div className="field">
+              <span className="lbl">Second colour</span>
+              <ColourField label="Second colour" value={kb.color2} onChange={(c) => setKb({ color2: c })} onCommit={commit} />
+            </div>
+          )}
+        </div>
+      )}
+      {live.kind === 'screen' && (
+        <div className="lt-stack">
+          <label className="field">
+            <span className="lbl">Variety {Math.round(live.spread * 100)}%</span>
+            <input type="range" min={0} max={100} step={5} value={Math.round(live.spread * 100)} onChange={(e) => setLive({ spread: Number(e.target.value) / 100 })} onPointerUp={commit} onKeyUp={commit} />
+            <small className="muted">0% is one colour, the screen's average; 100% each area its own.</small>
+          </label>
+          <label className="field">
+            <span className="lbl">Colour depth {live.saturation.toFixed(1)}x</span>
+            <input type="range" min={1} max={4} step={0.1} value={live.saturation} onChange={(e) => setLive({ saturation: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+          </label>
+          <label className="field">
+            <span className="lbl">Follows within {(live.smoothMs / 1000).toFixed(1)} s</span>
+            <input type="range" min={0} max={3000} step={100} value={live.smoothMs} onChange={(e) => setLive({ smoothMs: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+          </label>
+          <div className="field">
+            <span className="lbl">Read the screen on</span>
+            <div className="seg small" role="radiogroup" aria-label="Screen reader">
+              <button role="radio" aria-checked={live.gpu} className={live.gpu ? 'on' : ''} onClick={() => setLive({ gpu: true }, true)}>Graphics card</button>
+              <button role="radio" aria-checked={!live.gpu} className={!live.gpu ? 'on' : ''} onClick={() => setLive({ gpu: false }, true)}>Processor</button>
+            </div>
+            <small className="muted">{live.gpu ? 'About 3% of one processor core; the graphics driver reserves about 215 MB.' : 'About 13% of one processor core, 2 MB.'}</small>
+          </div>
+        </div>
+      )}
+      <p className="muted small">{hardware
+        ? 'This one runs on the keyboard\'s own chip: smooth, but in place of your colours, so the live interactions rest while it runs.'
+        : 'None, Clock and Screen mirror are drawn by the app, with the live interactions on top. The others run on the keyboard\'s own chip.'}</p>
+    </>
+  );
+
+  const liveBlock = (
+    <>
+      {hardware && <p className="m-res">They rest while {fx.name} runs on the keyboard. Choose None, Clock or Screen mirror under Effect to use them.</p>}
+      <div className="field lt-fx">
+        <span className="lbl">Key presses</span>
+        <div className="row">
+          {TAP_KINDS.map((t) => <button key={t.id} role="switch" aria-checked={live.tap.includes(t.id)} className={`chip ${live.tap.includes(t.id) ? 'on' : ''}`} onClick={() => setLive({ tap: toggleTap(live.tap, t.id) }, true)}>{t.name}</button>)}
+        </div>
+        <p className="small">{live.tap.length ? live.tap.map((t) => TAP_KINDS.find((k) => k.id === t)!.what).join(' ') : 'Off. Pick any to combine them.'}</p>
+      </div>
+      {live.tap.length > 0 && (
+        <div className="lt-stack">
+          {(live.tap.includes('laser') || live.tap.includes('lightning')) && (
+            <div className="field">
+              <span className="lbl">Beam colour</span>
+              {live.kind === 'screen' ? (
+                <small className="muted">Over the screen mirror the beams show your own key colours.</small>
+              ) : (
+                <div className="row">
+                  <ColourField label="Beam colour" value={live.tapColor === 'keys' ? '#FFFFFF' : live.tapColor} disabled={live.tapColor === 'keys'} onChange={(c) => setLive({ tapColor: c })} onCommit={commit} />
+                  <button className={`chip ${live.tapColor === 'keys' ? 'on' : ''}`} onClick={() => setLive({ tapColor: live.tapColor === 'keys' ? '#FFFFFF' : 'keys' }, true)}>Your key colours</button>
+                </div>
+              )}
+            </div>
+          )}
+          <label className="field">
+            <span className="lbl">Speed {live.tapSpeed} keys/s</span>
+            <input type="range" min={10} max={80} step={5} value={live.tapSpeed} onChange={(e) => setLive({ tapSpeed: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+            {live.tap.includes('seismic') && <small className="muted">Seismic erupts in the pressed key's colour from your static colours.</small>}
+          </label>
+        </div>
+      )}
+      <div className="field lt-fx">
+        <span className="lbl">Mouse</span>
+        <div className="seg small lt-seg" role="radiogroup" aria-label="Mouse">
+          {MOUSE_MODES.map((k) => <button key={k.id} role="radio" aria-checked={live.mouse === k.id} className={live.mouse === k.id ? 'on' : ''} onClick={() => setLive({ mouse: k.id }, true)}>{k.name}</button>)}
+        </div>
+        <p className="small">{mouseMode.what}{live.mouse !== 'off' && ' Your screen is mapped onto the keys: top-left is Esc, bottom-right the arrows.'}</p>
+      </div>
+      {live.mouse !== 'off' && (
+        <div className="lt-stack">
+          <label className="field">
+            <span className="lbl">Trail {live.fadeMs === 0 ? 'stays' : `${(live.fadeMs / 1000).toFixed(1)} s`}</span>
+            <input type="range" min={0} max={6000} step={250} value={live.fadeMs} onChange={(e) => setLive({ fadeMs: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+          </label>
+          {live.mouse === 'boost' && (
+            <label className="field">
+              <span className="lbl">Dimmed keys {live.dim}%</span>
+              <input type="range" min={5} max={100} step={5} value={live.dim} onChange={(e) => setLive({ dim: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
+            </label>
+          )}
+        </div>
+      )}
+      <p className="muted small">Drawn by the app while it's open, in the tray too; they pause while the keyboard is dark. Key presses and the pointer are read only to draw these and never stored.</p>
+    </>
+  );
+
+  // The colour of the selected keys, or the brush: under the map, so the map and its colours stay together.
+  const colourTools = perKey && (tool === 'paint' ? (
+    <div className="lt-under">
+      <span className="lbl">Brush</span>
+      <ColourField label="Brush colour" value={brush} onChange={setBrush} />
+      <Swatches colors={pal} current={brush} onPick={setBrush} />
+      <span className="muted small">Click or drag over keys to paint them; saved when you let go.</span>
+    </div>
+  ) : (
+    <div className="lt-under">
+      <span className="lbl">{sel.length ? `${sel.length} key${sel.length > 1 ? 's' : ''}` : 'No keys selected'}</span>
+      <ColourField label="Colour of the selected keys" value={selColour ?? '#000000'} disabled={sel.length === 0} onChange={(c) => colourKeys(sel, c)} onCommit={commit} />
+      <Swatches colors={pal} current={selColour} disabled={sel.length === 0} onPick={(c) => colourKeys(sel, c, true)} />
+      {sel.length > 0 && (
+        <Tip text="Removes the selected keys' own colours, so they show their group's colour or the base colour.">
+          <button className="chip" disabled={own === 0} onClick={() => clearKeys(sel)}>Use the base colour</button>
+        </Tip>
+      )}
+    </div>
+  ));
 
   return (
     <div className="cockpit">
-      <Section title="Keyboard lighting" className="span3" right={last && <span className={last.ok ? 'lbl ok-t' : 'lbl warn-t'}>{last.ok ? `applied ${new Date(last.at).toLocaleTimeString()}` : 'last write failed'}</span>}>
-        <div className="lt-head">
-          <div className="seg" role="radiogroup" aria-label="Who sets the keyboard's lighting">
-            <button role="radio" aria-checked={!custom} className={!custom ? 'on' : ''} disabled={busy != null} onClick={() => custom && restore()}>Your AWCC look</button>
-            <button role="radio" aria-checked={custom} className={custom ? 'on' : ''} disabled={busy != null} onClick={goCustom}>Custom</button>
-          </div>
-          <div className="lt-actions">
-            <Tip text={`Writes AWCC's own preset${st.awcc ? ` "${st.awcc.preset}"` : ''} to all keys and stops the app writing.`}>
-              <button className={`chip ${busy === 'restore' ? 'pending' : ''}`} disabled={busy != null} onClick={restore}>Back to my AWCC look</button>
-            </Tip>
-            <Tip text="Copies AWCC's colours, key by key, into Custom so you can change them from there. Replaces your custom key colours.">
-              <button className={`chip ${busy === 'import' ? 'pending' : ''}`} disabled={busy != null || !st.awcc} onClick={startFromAwcc}>Start from my AWCC look</button>
-            </Tip>
-          </div>
+      <div className="lt-bar span3">
+        <div className="seg" role="radiogroup" aria-label="Who sets the keyboard's lighting">
+          <button role="radio" aria-checked={!custom} className={!custom ? 'on' : ''} disabled={busy != null} onClick={() => custom && restore()}>Your AWCC look</button>
+          <button role="radio" aria-checked={custom} className={custom ? 'on' : ''} disabled={busy != null} onClick={goCustom}>Custom</button>
         </div>
-        <p className="muted small lt-why">
-          {custom
-            ? 'Custom: the app writes these colours to the keyboard, and again after sleep and wake. AWCC stays installed; its preset is untouched and can be put back any time.'
-            : `Your AWCC look: the app doesn't write to the keyboard${st.awcc ? `; AWCC's preset "${st.awcc.preset}" stays as it is` : ''}. Choose Custom to set your own colours.`}
-        </p>
-        {last && !last.ok && <p className="m-res bad">{last.text}</p>}
-        {!st.device.keyboard && <p className="m-res bad">The keyboard wasn't found{st.device.error ? `: ${st.device.error}` : '.'} Settings are still saved.</p>}
-        {st.device.keyboard && st.device.error && <p className="m-res bad">{st.device.error}</p>}
-      </Section>
-
+        <Tip text={`Writes AWCC's own preset${st.awcc ? ` "${st.awcc.preset}"` : ''} to all keys and stops the app writing.`}>
+          <button className={`chip ${busy === 'restore' ? 'pending' : ''}`} disabled={busy != null} onClick={restore}>Back to my AWCC look</button>
+        </Tip>
+        <Tip text="Copies AWCC's colours, key by key, into Custom so you can change them from there. Replaces your custom key colours.">
+          <button className={`chip ${busy === 'import' ? 'pending' : ''}`} disabled={busy != null || !st.awcc} onClick={startFromAwcc}>Start from my AWCC look</button>
+        </Tip>
+        <span className="spacer" />
+        {last && <span className={last.ok ? 'lbl ok-t' : 'lbl warn-t'}>{last.ok ? `applied ${new Date(last.at).toLocaleTimeString()} · again after sleep and wake` : 'last write failed'}</span>}
+      </div>
+      {last && !last.ok && <p className="m-res bad span3">{last.text}</p>}
+      {!st.device.keyboard && <p className="m-res bad span3">The keyboard wasn't found{st.device.error ? `: ${st.device.error}` : '.'} Settings are still saved.</p>}
+      {st.device.keyboard && st.device.error && <p className="m-res bad span3">{st.device.error}</p>}
       {problem && (
         <div className="note warn span3" role="alert">
           {problem.rolledBack ? `That change wasn't applied: ${problem.text} The page shows the last saved settings again.` : problem.text}
@@ -421,39 +723,31 @@ export function Lighting() {
             <button className="chip" disabled={sel.length === 0} onClick={() => setSel([])}>None</button>
           </div>
         )}
+        {colourTools}
         <p className="muted small">
-          {!custom ? `${layout.filter((k) => k.present !== false).length} keys as AWCC lights them.`
-            : !perKey ? `${fx.what} Per-key colours are kept and come back with Static.`
+          {!custom ? `${layout.filter((k) => k.present !== false).length} keys as AWCC lights them. Choose Custom to set your own colours; AWCC's preset stays as it is.`
+            : !perKey ? `${fx.what} Per-key colours are kept and come back with None, Clock or Screen mirror.`
             : !kb.on ? 'The keyboard is off: the map shows it dark. Colours are kept.'
-            : `Shown at ${kb.brightness}% brightness.`}
+            : `Shown at ${shownLevel}% brightness${sunOn ? ', set by the sun' : ''}.`}
         </p>
       </Section>
 
       {custom ? (
-        <Section title={tool === 'paint' && perKey ? 'Brush' : sel.length ? `${sel.length} key${sel.length > 1 ? 's' : ''} selected` : 'Selected keys'}>
-          {!perKey ? (
-            <p className="muted small">Choose Static under Whole keyboard to colour keys one by one.</p>
-          ) : tool === 'paint' ? (
-            <>
-              <ColourField label="Brush colour" value={brush} onChange={setBrush} />
-              <Swatches colors={pal} current={brush} onPick={setBrush} />
-              <p className="muted small">Click or drag over keys to paint them. The change is saved when you let go.</p>
-            </>
-          ) : (
-            <>
-              <ColourField label="Colour of the selected keys" value={selColour ?? '#000000'} disabled={sel.length === 0} onChange={(c) => colourKeys(sel, c)} onCommit={commit} />
-              <Swatches colors={pal} current={selColour} disabled={sel.length === 0} onPick={(c) => colourKeys(sel, c, true)} />
-              {sel.length === 0 ? <p className="muted small">Select keys on the map, or pick a group.</p> : (
-                <div className="row">
-                  <Tip text="Removes the selected keys' own colours, so they show their group's colour or the base colour.">
-                    <button className="chip" disabled={own === 0} onClick={() => clearKeys(sel)}>Use the base colour</button>
-                  </Tip>
-                  <span className="muted small">{own ? `${own} with their own colour` : 'All on the base or group colour'}</span>
-                </div>
-              )}
-            </>
-          )}
-        </Section>
+        <div className="lt-side">
+          <Section title="Layers · top draws over bottom">
+            <div className="layers">
+              {layers.map((l) => (
+                <button key={l.id} className={`layer ${layer === l.id ? 'on' : ''}`} aria-pressed={layer === l.id} onClick={() => setLayer(l.id)}>
+                  <span className="num mono">{l.n}</span>
+                  <span className="layer-t"><b>{l.name}</b><small>{l.sum}</small></span>
+                </button>
+              ))}
+            </div>
+          </Section>
+          <Section title={layer === 'live' ? '3 · Live interactions' : layer === 'effect' ? '2 · Effect' : '1 · Base profile · whole keyboard'}>
+            {layer === 'live' ? liveBlock : layer === 'effect' ? effectBlock : baseBlock}
+          </Section>
+        </div>
       ) : (
         <Section title="AWCC's look">
           {st.awcc ? (
@@ -466,161 +760,33 @@ export function Lighting() {
         </Section>
       )}
 
-      {custom && (
-        <Section title="Base profile · whole keyboard" className="span2">
-          <div className="lt-grid">
-            <Switch checked={kb.on} onChange={(v) => setKb({ on: v }, true)} name={kb.on ? 'Backlight on' : 'Backlight off'} what="Off keeps every colour for when it's back on." />
-            <label className="field">
-              <span className="lbl">Brightness {kb.brightness}%</span>
-              <input type="range" min={0} max={100} value={kb.brightness} disabled={!kb.on}
-                onChange={(e) => setKb({ brightness: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
-            </label>
-            <div className="field">
-              <span className="lbl">Base colour</span>
-              <ColourField label="Base colour" value={kb.color} onChange={(c) => setKb({ color: c })} onCommit={commit} />
-              <small className="muted">{hardware ? `The colour ${fx.name.toLowerCase()} uses.` : 'For keys without their own or a group colour.'}</small>
-            </div>
-          </div>
-          <p className="muted small">Your colours on the map are the base profile. The effect and the live interactions draw over them.</p>
+      {dl && (
+        <Section title="Day and night" className="span3" right={sunOn ? <span className="lbl ok-t">following the sun</span> : undefined}>
+          <DayNight d={dl} sun={sun?.today ?? null} cities={sun?.cities ?? []} err={sunErr} set={setDaylight} commit={commit} brightness={kb.brightness} custom={custom} />
         </Section>
       )}
 
-      {custom && (
-        <Section title="2 · Effect" className="span3">
-          <div className="seg small" role="radiogroup" aria-label="Effect">
-            <button role="radio" aria-checked={effectId === 'none'} className={effectId === 'none' ? 'on' : ''} onClick={() => pickEffect('none')}>None</button>
-            <button role="radio" aria-checked={effectId === 'clock'} className={effectId === 'clock' ? 'on' : ''} onClick={() => pickEffect('clock')}>Clock</button>
-            <button role="radio" aria-checked={effectId === 'screen'} className={effectId === 'screen' ? 'on' : ''} onClick={() => pickEffect('screen')}>Screen mirror</button>
-            {EFFECTS.filter((e) => e.id !== 'static').map((e) => <button key={e.id} role="radio" aria-checked={effectId === e.id} className={effectId === e.id ? 'on' : ''} onClick={() => pickEffect(e.id)}>{e.name}</button>)}
-          </div>
-          <p className="small">{effectWhat}</p>
-          {hardware && (fx.tempo || fx.color2) && (
-            <div className="lt-grid">
-              {fx.tempo && (
-                <label className="field">
-                  <span className="lbl">Tempo {kb.tempo}</span>
-                  <input type="range" min={0} max={255} value={kb.tempo} onChange={(e) => setKb({ tempo: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
-                </label>
-              )}
-              {fx.color2 && (
-                <div className="field">
-                  <span className="lbl">Second colour</span>
-                  <ColourField label="Second colour" value={kb.color2} onChange={(c) => setKb({ color2: c })} onCommit={commit} />
-                </div>
-              )}
-            </div>
-          )}
-          {live.kind === 'screen' && (
-            <div className="lt-grid">
-              <label className="field">
-                <span className="lbl">Variety {Math.round(live.spread * 100)}%</span>
-                <input type="range" min={0} max={100} step={5} value={Math.round(live.spread * 100)} onChange={(e) => setLive({ spread: Number(e.target.value) / 100 })} onPointerUp={commit} onKeyUp={commit} />
-                <small className="muted">0% is one colour, the screen's average; 100% each area its own.</small>
-              </label>
-              <label className="field">
-                <span className="lbl">Colour depth {live.saturation.toFixed(1)}x</span>
-                <input type="range" min={1} max={4} step={0.1} value={live.saturation} onChange={(e) => setLive({ saturation: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
-              </label>
-              <label className="field">
-                <span className="lbl">Follows within {(live.smoothMs / 1000).toFixed(1)} s</span>
-                <input type="range" min={0} max={3000} step={100} value={live.smoothMs} onChange={(e) => setLive({ smoothMs: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
-              </label>
-              <div className="field">
-                <span className="lbl">Read the screen on</span>
-                <div className="seg small" role="radiogroup" aria-label="Screen reader">
-                  <button role="radio" aria-checked={live.gpu} className={live.gpu ? 'on' : ''} onClick={() => setLive({ gpu: true }, true)}>Graphics card</button>
-                  <button role="radio" aria-checked={!live.gpu} className={!live.gpu ? 'on' : ''} onClick={() => setLive({ gpu: false }, true)}>Processor</button>
-                </div>
-                <small className="muted">{live.gpu ? 'About 3% of one processor core; the graphics driver reserves about 215 MB.' : 'About 13% of one processor core, 2 MB.'}</small>
-              </div>
-            </div>
-          )}
-          <p className="muted small">{hardware
-            ? 'This one runs on the keyboard\'s own chip: smooth, but in place of your colours, so the live interactions rest while it runs.'
-            : 'None, Clock and Screen mirror are drawn by the app, with the live interactions on top. The others run on the keyboard\'s own chip.'}</p>
-        </Section>
-      )}
-
-      {custom && (
-        <Section title="3 · Live interactions" className="span3" right={liveNow && !hardware && <span className="lbl ok-t">{liveNow} {kb.on && kb.brightness > 0 ? 'on' : '(waits for the backlight)'}</span>}>
-          {hardware && <p className="m-res">They rest while {fx.name} runs on the keyboard. Choose None, Clock or Screen mirror under Effect to use them.</p>}
-          <div className="field lt-fx">
-            <span className="lbl">Key presses</span>
-            <div className="row">
-              {TAP_KINDS.map((t) => <button key={t.id} role="switch" aria-checked={live.tap.includes(t.id)} className={`chip ${live.tap.includes(t.id) ? 'on' : ''}`} onClick={() => setLive({ tap: toggleTap(live.tap, t.id) }, true)}>{t.name}</button>)}
-            </div>
-            <p className="small">{live.tap.length ? live.tap.map((t) => TAP_KINDS.find((k) => k.id === t)!.what).join(' ') : 'Off. Pick any to combine them.'}</p>
-          </div>
-          {live.tap.length > 0 && (
-            <div className="lt-grid">
-              {(live.tap.includes('laser') || live.tap.includes('lightning')) && (
-                <div className="field">
-                  <span className="lbl">Beam colour</span>
-                  {live.kind === 'screen' ? (
-                    <small className="muted">Over the screen mirror the beams show your own key colours.</small>
-                  ) : (
-                    <>
-                      <ColourField label="Beam colour" value={live.tapColor === 'keys' ? '#FFFFFF' : live.tapColor} disabled={live.tapColor === 'keys'} onChange={(c) => setLive({ tapColor: c })} onCommit={commit} />
-                      <button className={`chip ${live.tapColor === 'keys' ? 'on' : ''}`} onClick={() => setLive({ tapColor: live.tapColor === 'keys' ? '#FFFFFF' : 'keys' }, true)}>Your key colours</button>
-                    </>
-                  )}
-                </div>
-              )}
-              <label className="field">
-                <span className="lbl">Speed {live.tapSpeed} keys/s</span>
-                <input type="range" min={10} max={80} step={5} value={live.tapSpeed} onChange={(e) => setLive({ tapSpeed: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
-                {live.tap.includes('seismic') && <small className="muted">Seismic erupts in the pressed key's colour from your static colours.</small>}
-              </label>
-            </div>
-          )}
-          <div className="field lt-fx">
-            <span className="lbl">Mouse</span>
-            <div className="seg small" role="radiogroup" aria-label="Mouse">
-              {MOUSE_MODES.map((k) => <button key={k.id} role="radio" aria-checked={live.mouse === k.id} className={live.mouse === k.id ? 'on' : ''} onClick={() => setLive({ mouse: k.id }, true)}>{k.name}</button>)}
-            </div>
-            <p className="small">{mouseMode.what}{live.mouse !== 'off' && ' Your screen is mapped onto the keys: top-left is Esc, bottom-right the arrows.'}</p>
-          </div>
-          {live.mouse !== 'off' && (
-            <div className="lt-grid">
-              <label className="field">
-                <span className="lbl">Trail {live.fadeMs === 0 ? 'stays' : `${(live.fadeMs / 1000).toFixed(1)} s`}</span>
-                <input type="range" min={0} max={6000} step={250} value={live.fadeMs} onChange={(e) => setLive({ fadeMs: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
-              </label>
-              {live.mouse === 'boost' && (
-                <label className="field">
-                  <span className="lbl">Dimmed keys {live.dim}%</span>
-                  <input type="range" min={5} max={100} step={5} value={live.dim} onChange={(e) => setLive({ dim: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} />
-                </label>
-              )}
-            </div>
-          )}
-          <p className="muted small">
-            Drawn by the app while it's open, in the tray too; they pause while the keyboard is dark (sleep, lid, display off). Key presses and the pointer are read only to draw these and never stored.
-          </p>
-        </Section>
-      )}
-
-      <Section title="Keep dark" className={custom ? '' : 'span3'}>
-        <div className="lt-stack">
+      <Section title="Keep dark" className="span2">
+        <div className="lt-grid">
           <Switch checked={draft.offOnSleep} onChange={(v) => update({ ...draft, offOnSleep: v }, true)} name="When the laptop sleeps" what="Back on when it wakes." />
           <Switch checked={draft.offOnLidClose} onChange={(v) => update({ ...draft, offOnLidClose: v }, true)} name="With the lid closed" />
-          <div className="field">
-            <span className="lbl">When the display turns off</span>
-            <div className="seg small" role="radiogroup" aria-label="When the display turns off">
-              <button role="radio" aria-checked={displayOff === 'keep'} className={displayOff === 'keep' ? 'on' : ''} onClick={() => update({ ...draft, offOnDisplayOff: false, clockOnDisplayOff: false }, true)}>Stay lit</button>
-              <button role="radio" aria-checked={displayOff === 'dark'} className={displayOff === 'dark' ? 'on' : ''} onClick={() => update({ ...draft, offOnDisplayOff: true, clockOnDisplayOff: false }, true)}>Go dark</button>
-              <button role="radio" aria-checked={displayOff === 'clock'} className={displayOff === 'clock' ? 'on' : ''} onClick={() => update({ ...draft, offOnDisplayOff: false, clockOnDisplayOff: true }, true)}>Show the clock</button>
-            </div>
-            {displayOff === 'clock' && <small className="muted">The keyboard shows the time in big digits until the display is back.</small>}
-          </div>
           <Switch checked={draft.dimOnBatterySaver} onChange={(v) => update({ ...draft, dimOnBatterySaver: v }, true)} name="Dim on Energy Saver" what="30% brightness while Windows Energy Saver is on." />
           <Switch checked={draft.pauseAwcc} onChange={(v) => update({ ...draft, pauseAwcc: v }, true)} name="Pause AWCC's lighting while writing"
             what="AWCC's two lighting programs are held for the moment of each write, so only one program talks to the keyboard at a time." />
         </div>
+        <div className="field">
+          <span className="lbl">When the display turns off</span>
+          <div className="seg small lt-seg" role="radiogroup" aria-label="When the display turns off">
+            <button role="radio" aria-checked={displayOff === 'keep'} className={displayOff === 'keep' ? 'on' : ''} onClick={() => update({ ...draft, offOnDisplayOff: false, clockOnDisplayOff: false }, true)}>Stay lit</button>
+            <button role="radio" aria-checked={displayOff === 'dark'} className={displayOff === 'dark' ? 'on' : ''} onClick={() => update({ ...draft, offOnDisplayOff: true, clockOnDisplayOff: false }, true)}>Go dark</button>
+            <button role="radio" aria-checked={displayOff === 'clock'} className={displayOff === 'clock' ? 'on' : ''} onClick={() => update({ ...draft, offOnDisplayOff: false, clockOnDisplayOff: true }, true)}>Show the clock</button>
+          </div>
+          {displayOff === 'clock' && <small className="muted">The keyboard shows the time in big digits until the display is back.</small>}
+        </div>
         {!custom && <p className="muted small">These apply in Custom. With your AWCC look the app does nothing on sleep or wake.</p>}
       </Section>
 
-      <Section title="Zone lights" className="span3" right={<span className="lbl warn-t">Sent to the controller, but these lights don't light on this laptop</span>}>
+      <Section title="Zone lights" right={<span className="lbl warn-t">no light on this laptop</span>}>
         {zoneIds.length === 0 ? <p className="muted small">No zone colours set.</p> : (
           <div className="zones">
             {zoneIds.map((id) => (
@@ -631,7 +797,7 @@ export function Lighting() {
             ))}
           </div>
         )}
-        <p className="muted small">The zone controller takes the colours, but the lid and rear lights on this laptop stay dark. Nothing here depends on them.</p>
+        <p className="muted small">The zone controller takes the colours, but the lid and rear lights on this laptop stay dark.</p>
       </Section>
     </div>
   );

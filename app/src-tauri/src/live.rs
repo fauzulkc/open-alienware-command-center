@@ -16,7 +16,7 @@
 
 use crate::glow::Keys;
 use crate::lights::{self, Shared, LIVE};
-use cockpit_core::lightctl::{self, alienfx::device::Pauser, LastApply, LightingSettings, Shown, SystemIo};
+use cockpit_core::lightctl::{self, alienfx::device::Pauser, LastApply, LightingSettings, PowerState, Shown, SystemIo};
 use cockpit_core::live;
 use cockpit_core::reactive::Clock;
 use std::time::{Duration, Instant};
@@ -81,13 +81,17 @@ pub fn run(shared: Shared, keys: std::sync::Arc<Keys>, rx: std::sync::mpsc::Rece
             let rt = lights::lock(&shared);
             fresh != s || rt.quitting || live::plan(&fresh, &rt.power) != started
         };
-        let r = live::run_windows(&mut SystemIo, &s, &p, prev, s.pause_awcc.then_some(&pauser as &dyn Pauser), &mut Steady(Instant::now()), Some(&mut presses), &mut stop);
+        // Day and night's level moves during a run (`daylight_tick` in lib.rs updates the power state): the run
+        // sends it itself, between its frames, so dusk never stops the animation.
+        let mut power = || lights::lock(&shared).power;
+        let r = live::run_windows(&mut SystemIo, &s, &p, prev, s.pause_awcc.then_some(&pauser as &dyn Pauser), &mut Steady(Instant::now()), Some(&mut presses), Some(&mut power), &mut stop);
         keys.set_listening(false);
         {
             let mut rt = lights::lock(&shared);
             match r {
                 Ok(_) => {
-                    rt.shown = Shown::of(&s, &p);
+                    // At the level the run ended on: the sun's, as it took it over.
+                    rt.shown = Shown::of(&s, &PowerState { daylight: rt.power.daylight, ..p });
                     failed = None;
                 }
                 Err(e) => {

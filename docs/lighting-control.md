@@ -116,6 +116,28 @@ exit 2.
   on → re-apply the current settings (AWCC may have written meanwhile). In `awcc` mode the app does nothing.
 - `restore-awcc` writes AWCC's own preset (all 91 keys) and sets mode `awcc`.
 
+## Day and night (`cockpit-core::daylight`, `lighting.daylight`)
+Asked for by the owner, 2026-11-26: brighter by day, dimmer at night, following the real sun where they are, by
+season and region.
+- Settings: `{ on, day, night, place, lat, lon }`; off by default; `day` 100 %, `night` 25 % (0 turns the
+  keyboard off after dusk); `place` is `auto`, a city from `CITIES`, or `custom` with `lat`/`lon`.
+- Where: `auto` takes Windows' time zone id (`GetDynamicTimeZoneInformation`) and its city from a table of every
+  Windows zone (the `UTC±n` zones have none: the longitude is then estimated from the clock's offset and the page
+  asks for a city). The region setting is not used: on the owner's laptop it says Canada while the clock is Dhaka.
+  No location service, nothing online.
+- When: the sun's height from NOAA's solar equations; checked against published sunrise and sunset for London
+  (both solstices) and Dhaka to within 3 minutes, and the polar night and midnight sun at Tromsø.
+- How bright: `night` below -6° (civil dusk to civil dawn), `day` from +6°, smoothstep between: about an hour
+  each way in the tropics, longer further from the equator.
+- The level is `PowerState::daylight`; `level()` uses it in place of `keyboard.brightness` while day and night is
+  on, under the dark rules and the Energy Saver cap. The app looks every 30 s and sends
+  `PowerEvent::Daylight`; a changed level is `LightAction::Level`: one brightness report (`level_plan`), no
+  colours. A running live animation reads the power state once a second and sends that report itself between
+  its frames, so dusk never stops or restarts it; its write-back at the end uses the new level. Going to 0 is
+  `Dark`, coming back from 0 a full `Reapply`. The command line takes the level at the moment it writes.
+- The Lighting page shows today's curve over night, twilight and day, with sunrise, sunset, first and last
+  light and the day's length, for the settings on the page before they are saved (`daylight_today`).
+
 ## Keyboard clock (`cockpit-core::clock`, `cockpit lighting clock`)
 
 The keyboard's chip has no clock and can't store a sequence of its own (v5: colours, brightness and the

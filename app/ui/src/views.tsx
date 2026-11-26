@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
-import { api, hex, PROFILE_NAMES, sensorName, type BoostChange, type Clocks, type Controls, type Drift, type Fan, type Health, type LogDay, type ModeChange, type Point, type Proc, type Settings, type Status } from './api';
+import { useEffect, useMemo, useState } from 'react';
+import type { Page } from './App';
+import { api, hex, PROFILE_NAMES, sensorName, type BoostChange, type Clocks, type Controls, type Drift, type Fan, type Health, type LightingStatus, type LogDay, type ModeChange, type Point, type Proc, type Settings, type Status } from './api';
 import { Chart, CurveEditor, FanRotor, Gauge, LoadChart, LockedWhy, ModeDock, Section, Tip, type LoadSeries } from './components';
 import { Duty, FanResponse, SpeedAndTemp } from './fangraphs';
-import { alertText, fanFlag, stuckFans, usedColour, usedGlow, verdict, zoneName } from './logic';
+import { KeyboardMap } from './lighting';
+import { alertText, fanFlag, fanLayout, liveOf, liveSummary, modeChanges, shownColors, stuckFans, usedColour, usedGlow, verdict, zoneName } from './logic';
 
 /** Power and what it powers, on one time axis: each on its own scale. */
 function loadSeries(h: Point[]): LoadSeries[] {
@@ -25,7 +27,8 @@ function useClocks(): Clocks | null {
   const [c, setC] = useState<Clocks | null>(null);
   useEffect(() => {
     let live = true;
-    const tick = () => api.clocks(true).then((v) => { if (live) setC(v); }, () => {});
+    // Skipped while the window is hidden or minimised (nothing to show, and the NVIDIA GPU can stay asleep).
+    const tick = () => { if (!document.hidden) api.clocks(true).then((v) => { if (live) setC(v); }, () => {}); };
     tick();
     const id = setInterval(tick, 1000);
     return () => { live = false; clearInterval(id); };
@@ -42,23 +45,25 @@ function ClockBar({ label, mhz, of, note, hint }: { label: string; mhz: number |
   return (
     <div className="clk-row" title={hint}>
       <span className="clk-lbl">{label}</span>
-      <span className="clk-bar"><i style={{ width: `${pct}%`, background: usedColour(pct), boxShadow: usedGlow(pct) }} /></span>
+      <span className="clk-bar"><i style={{ transform: barScale(pct), background: usedColour(pct), boxShadow: usedGlow(pct) }} /></span>
       <b className="mono">{note ?? ghz(mhz)}</b>
     </div>
   );
 }
+
+/** A bar's length as a transform (animated by the compositor, no repaint): `pct` of the track, clamped. */
+const barScale = (pct: number) => `scaleX(${Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0)) / 100})`;
 
 const watts = (w: number | null | undefined) => (w == null ? '—' : `${w.toFixed(1)} W`);
 
 /** Where the power goes: each measured part as its share of the total, the input against the output. */
 function PowerPanel({ c }: { c: Clocks | null }) {
   const p = c?.power;
-  if (!p) return <p className="muted small">{c ? 'No power readings.' : 'Reading…'}</p>;
-  const total = p.inputW ?? p.measuredW;
+  if (!p) return <p className="muted small">{c ? 'No power readings.' : 'Reading…'}</p>;  const total = p.inputW ?? p.measuredW;
   const row = (label: string, w: number | null, hint: string, note?: string, sub = false) => w == null ? null : (
     <div className={`clk-row pw-row ${sub ? 'pw-sub' : ''}`} title={hint}>
       <span className="clk-lbl">{label}</span>
-      <span className="clk-bar"><i style={{ width: `${total > 0 ? Math.min(100, (w / total) * 100) : 0}%`, background: usedColour(total > 0 ? (w / total) * 100 : 0), boxShadow: usedGlow(total > 0 ? (w / total) * 100 : 0) }} /></span>
+      <span className="clk-bar"><i style={{ transform: barScale(total > 0 ? (w / total) * 100 : 0), background: usedColour(total > 0 ? (w / total) * 100 : 0), boxShadow: usedGlow(total > 0 ? (w / total) * 100 : 0) }} /></span>
       <b className="mono">{watts(w)}{note && <small className="muted"> {note}</small>}</b>
     </div>
   );
@@ -158,13 +163,13 @@ export function useModes(status: Status | null, controls: Controls | null) {
 }
 const MODES_DEFAULT = ['0xA3', '0xA0', '0xA1', '0xA4', '0xA5', '0xAB'];
 
-function Moment({ p, live }: { p: Point | null; live: boolean }) {
+function Moment({ p, live, className = 'moment' }: { p: Point | null; live: boolean; className?: string }) {
   const [tab, setTab] = useState<'cpu' | 'ram' | 'gpu' | 'disk'>('cpu');
   const fmt = (x: Proc) => (tab === 'cpu' || tab === 'gpu' ? `${x.value.toFixed(1)}%` : tab === 'ram' ? `${x.value >= 1024 ? (x.value / 1024).toFixed(1) + ' GB' : Math.round(x.value) + ' MB'}` : `${x.value >= 1024 ? (x.value / 1024).toFixed(1) + ' MB/s' : Math.round(x.value) + ' KB/s'}`);
   const list = p?.top[tab] ?? [];
   const top = list[0]?.value || 1;
   return (
-    <Section title={live ? 'What is using the machine now' : `What was using the machine at ${p ? new Date(p.at).toLocaleTimeString() : ''}`} className="moment" right={
+    <Section title={live ? 'What is using the machine now' : `What was using the machine at ${p ? new Date(p.at).toLocaleTimeString() : ''}`} className={className} right={
       <div className="tabs">{(['cpu', 'ram', 'gpu', 'disk'] as const).map((t) => <button key={t} className={t === tab ? 'on' : ''} onClick={() => setTab(t)}>{t.toUpperCase()}</button>)}</div>
     }>
       <div className="m-totals">
@@ -177,7 +182,7 @@ function Moment({ p, live }: { p: Point | null; live: boolean }) {
         {list.map((x) => (
           <li key={x.name}>
             <Tip text={`${x.name}${x.count > 1 ? `: ${x.count} processes added up` : ''}`}><span className="p-name">{x.name}</span></Tip>
-            <span className="p-bar"><i style={{ width: `${(x.value / top) * 100}%` }} /></span>
+            <span className="p-bar"><i style={{ transform: barScale((x.value / top) * 100) }} /></span>
             <span className="p-val mono">{fmt(x)}</span>
           </li>
         ))}
@@ -195,13 +200,14 @@ function EnergySaverNote({ status }: { status: Status | null }) {
 }
 
 // ---------------------------------------------------------------- Overview: the cockpit
-export function Overview({ status, history, controls }: { status: Status | null; history: Point[]; controls: Controls | null }) {
+// The redesign (2026-11-25): the same gauges, dock, rotors and keyboard, tighter: gauges and mode with the fans
+// and boost beside them, then temperature with the keyboard now, then power and load with what's using it.
+export function Overview({ status, history, controls, go }: { status: Status | null; history: Point[]; controls: Controls | null; go: (p: Page) => void }) {
   const s = status?.snapshot;
   const cpu = sensorC(status, 'CPU');
   const gpu = sensorC(status, 'GPU');
   const w = status?.power?.cpuPackageW ?? null;
   const v = verdict(status);
-  const stuck = stuckFans(history, s?.fans ?? []);
   const m = useModes(status, controls);
   const [hover, setHover] = useState<number | null>(null);
   const shown = hover != null ? history[hover] : history[history.length - 1] ?? null;
@@ -210,8 +216,11 @@ export function Overview({ status, history, controls }: { status: Status | null;
   return (
     <div className="cockpit">
       <div className={`verdict ${v.tone}`}><span className="v-dot" />{v.text}</div>
+      <EnergySaverNote status={status} />
+      {controls?.emergency?.active && <div className="note warn span3">Emergency fan rule: every fan is at full until the laptop cools to {controls.emergency.releaseC} °C. Fan changes wait until then.</div>}
+      {s?.alerts.map((a, i) => <div key={i} className="note warn">{alertText(a)}</div>)}
       <div className="hero">
-        <Gauge label="CPU" value={cpu} sub={<Tip text={`Average clock over every core (fastest core ${ghz(clk?.cpu?.maxMhz)}), and CPU package power from Windows' energy meter. Every core is on the Performance page.`}><span className="mono">{ghz(clk?.cpu?.avgMhz)} · {w != null ? `${w.toFixed(1)} W` : '—'}</span></Tip>} tip="CPU temperature from the Alienware firmware sensor the CPU fans follow. TjMax is 100 °C: the CPU slows itself down there." />
+        <Gauge label="CPU" value={cpu} sub={<Tip text={`Average clock over every core (fastest core ${ghz(clk?.cpu?.maxMhz)}), and CPU package power from Windows' energy meter. Every core is on the Power page.`}><span className="mono">{ghz(clk?.cpu?.avgMhz)} · {w != null ? `${w.toFixed(1)} W` : '—'}</span></Tip>} tip="CPU temperature from the Alienware firmware sensor the CPU fans follow. TjMax is 100 °C: the CPU slows itself down there." />
         <div className="hero-mid">
           <span className="lbl">Thermal mode</span>
           <span className="mode-now">{s?.profile_name ?? '—'}</span>
@@ -219,48 +228,58 @@ export function Overview({ status, history, controls }: { status: Status | null;
           {m.result && <span className={m.result.ok ? 'm-res ok' : 'm-res bad'}>{m.result.text}</span>}
           {!m.enabled && <LockedWhy reasons={controls?.modes.reasons ?? []} />}
         </div>
-        <Gauge label="GPU" value={gpu} sub={<Tip text={`The NVIDIA GPU's core clock${clk?.gpu?.maxCoreMhz ? ` (up to ${clk.gpu.maxCoreMhz} MHz)` : ''} and power${clk?.gpu?.powerLimitW ? ` (limit ${Math.round(clk.gpu.powerLimitW)} W)` : ''}, from its driver; the busiest GPU engine is ${gpuNow != null ? `${gpuNow}%` : 'not known'}. More on the Performance page.`}><span className="mono">{mhzText(clk?.gpu?.coreMhz)} · {watts(clk?.gpu?.powerW)}</span></Tip>} tip="GPU temperature from the Alienware firmware sensor the GPU fans follow." />
+        <Gauge label="GPU" value={gpu} sub={<Tip text={`The NVIDIA GPU's core clock${clk?.gpu?.maxCoreMhz ? ` (up to ${clk.gpu.maxCoreMhz} MHz)` : ''} and power${clk?.gpu?.powerLimitW ? ` (limit ${Math.round(clk.gpu.powerLimitW)} W)` : ''}, from its driver; the busiest GPU engine is ${gpuNow != null ? `${gpuNow}%` : 'not known'}. More on the Power page.`}><span className="mono">{mhzText(clk?.gpu?.coreMhz)} · {watts(clk?.gpu?.powerW)}</span></Tip>} tip="GPU temperature from the Alienware firmware sensor the GPU fans follow." />
       </div>
-      <EnergySaverNote status={status} />
-      {controls?.emergency?.active && <div className="note warn span3">Emergency fan rule: every fan is at full until the laptop cools to {controls.emergency.releaseC} °C. Fan changes wait until then.</div>}
-      {s?.alerts.map((a, i) => <div key={i} className="note warn">{alertText(a)}</div>)}
-      <Section title="Temperature · hover for any moment" className="span2">
+      <FanBoost controls={controls} status={status} history={history} compact />
+      <Section title="Temperature · hover for any moment" className="span2 cp-late" right={<button className="chip" onClick={() => go('Timeline')}>Timeline</button>}>
         <Chart points={history} min={30} max={105} hover={hover} onHover={setHover} series={[{ name: 'CPU', color: COL.cpu, unit: '°', values: history.map((p) => p.cpu_c) }, { name: 'GPU', color: COL.gpu, unit: '°', values: history.map((p) => p.gpu_c) }]} />
       </Section>
-      <Moment p={shown} live={hover == null} />
-      <Section title="Fans · live">
-        <div className="rotors">
-          {(s?.fans ?? []).map((f) => (
-            <FanRotor key={f.id} rpm={f.rpm} max={f.max_rpm} label={zoneName(s?.fans ?? [], f)} id={hex(f.id)} {...(s ? fanFlag(f, s, stuck) : {})} />
-          ))}
-          {!s && <p className="muted">No fan readings without the hardware service.</p>}
-        </div>
-      </Section>
-      <Section title="Power and load · each line on its own scale · hover for any moment" className="span3" right={clk?.power && <Tip text="The CPU package and the NVIDIA GPU together, as they report it. Where every watt goes is on the Performance page."><span className="lbl">measured now <b className="mono">{watts(clk.power.measuredW)}</b></span></Tip>}>
+      <LightingGlance go={go} />
+      <Section title="Power and load · each line on its own scale" className="span2 cp-late" right={clk?.power && <Tip text="The CPU package and the NVIDIA GPU together, as they report it. Where every watt goes is on the Power page."><span className="lbl">measured now <b className="mono">{watts(clk.power.measuredW)}</b></span></Tip>}>
         <LoadChart points={history} hover={hover} onHover={setHover} series={loadSeries(history)} />
       </Section>
+      <Moment p={shown} live={hover == null} className="cp-late" />
     </div>
   );
 }
 
-// ---------------------------------------------------------------- Performance
-export function Performance({ status, history, controls, settings, save }: { status: Status | null; history: Point[]; controls: Controls | null; settings: Settings | null; save: (s: Settings) => void }) {
+/** The keyboard as it is now, small and read-only, with the lighting in a line. Read once when shown (the
+ * Lighting page is where it changes). */
+function LightingGlance({ go }: { go: (p: Page) => void }) {
+  const [st, setSt] = useState<LightingStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.lightingStatus().then((s) => { if (live) setSt(s); }, () => {});
+    return () => { live = false; };
+  }, []);
+  const colors = useMemo(() => (st ? (st.settings.mode === 'custom' || !st.awcc ? shownColors(st.layout, st.settings.keyboard) : st.awcc.keys) : {}), [st]);
+  const kb = st?.settings.keyboard;
+  const live = st ? liveSummary(liveOf(st.settings)) : '';
+  const none = () => {};
+  return (
+    <Section title={st?.settings.mode === 'custom' ? 'Lighting · custom' : "Lighting · AWCC's look"} right={<button className="chip" onClick={() => go('Lighting')}>Edit</button>}>
+      {st ? (
+        <button className="kb-glance" onClick={() => go('Lighting')} aria-label="Open Lighting">
+          <KeyboardMap layout={st.layout} colors={colors} selected={[]} editable={false} tool="select" onSelect={none} onPaint={none} onStroke={none} />
+        </button>
+      ) : <p className="muted small">Reading the keyboard…</p>}
+      {kb && <p className="small muted glance-line">{st?.settings.mode === 'custom' ? `${live || 'Static colours'} · ${kb.on ? `${kb.brightness}%` : 'backlight off'}` : 'The app leaves the keyboard to AWCC.'}</p>}
+    </Section>
+  );
+}
+
+// ---------------------------------------------------------------- Thermals: modes, fans and the rules
+export function Thermals({ status, history, controls, settings, save }: { status: Status | null; history: Point[]; controls: Controls | null; settings: Settings | null; save: (s: Settings) => void }) {
   const m = useModes(status, controls);
   const fans = status?.snapshot?.fans ?? [];
   const [sel, setSel] = useState('0x32');
   const [hover, setHover] = useState<number | null>(null);
   const curve = settings?.fanCurves[sel] ?? [[45, 0], [65, 25], [80, 60], [92, 100]];
-  const clk = useClocks();
   return (
     <div className="cockpit">
       <EnergySaverNote status={status} />
-      <Section title="Clocks · live, like CPU-Z and GPU-Z" className="span3">
-        <ClocksPanel c={clk} />
-      </Section>
-      <Section title="Power · where it goes" className="span3">
-        <PowerPanel c={clk} />
-      </Section>
-      <Section title="Thermal mode" className="span3" right={<span className="lbl">{m.enabled ? `via ${controls?.modes.route}` : 'read only'}</span>}>
+      {controls?.emergency?.active && <div className="note warn span3">Emergency fan rule: every fan is at full until the laptop cools to {controls.emergency.releaseC} °C. Fan changes wait until then.</div>}
+      <Section title="Thermal mode" className="span3" right={<span className="lbl">{m.enabled ? `via ${controls?.modes.route} · confirmed by reading it back` : 'read only'}</span>}>
         <div className="mode-cards">
           {[...['0xA3', '0xA0', '0xA1', '0xA4', '0xA5'], '0xAB'].filter((id) => m.available.includes(id)).map((id) => (
             <button key={id} className={`mcard ${m.current === id ? 'on' : ''} ${m.pending === id ? 'pending' : ''}`} disabled={!m.enabled || m.pending != null} onClick={() => m.pick(id)}>
@@ -271,31 +290,53 @@ export function Performance({ status, history, controls, settings, save }: { sta
         </div>
         {m.result && <span className={m.result.ok ? 'm-res ok' : 'm-res bad'}>{m.result.text}</span>}
         <LockedWhy reasons={controls?.modes.reasons ?? []} />
-        <p className="muted small">Each switch is checked first (this laptop's model and BIOS, a mode its firmware reported) and confirmed by reading the mode back.</p>
       </Section>
-      <Section title="Boost key · Fn+F1" className="span3">
-        <p>Toggles G-Mode, then back to the mode you were in, ignoring presses within about 2 s, like AWCC. While an admin window is in front AWCC can't hear the key; Alien Cockpit catches it then.</p>
+      <FanBoost controls={controls} status={status} history={history} />
+      <Section title="Emergency fans · boost key">
         {settings && (
-          <div className="split">
-            <label className="field"><span className="lbl">Key does</span>
-              <select value={settings.boostKey} onChange={(e) => save({ ...settings, boostKey: e.target.value })}><option value="awcc">Toggle G-Mode</option><option value="cycle">Step through modes</option></select>
+          <>
+            <label className="field"><span className="lbl">Emergency fans at {settings.emergencyC} °C</span><input type="range" min={85} max={98} value={settings.emergencyC} onChange={(e) => save({ ...settings, emergencyC: Number(e.target.value) })} /></label>
+            <p className="muted small">When a sensor stays this hot, every fan goes to full until it cools. It can be lowered, never raised past 98 °C.</p>
+            <label className="field"><span className="lbl">Boost key Fn+F1</span>
+              <select value={settings.boostKey} onChange={(e) => save({ ...settings, boostKey: e.target.value })}><option value="awcc">Toggles G-Mode</option><option value="cycle">Steps through the modes</option></select>
             </label>
-            <label className="field"><span className="lbl">Back from G-Mode, when the mode before is unknown (after a restart)</span>
+            <label className="field"><span className="lbl">Back from G-Mode, if the mode before is unknown</span>
               <select value={settings.defaultProfile} onChange={(e) => save({ ...settings, defaultProfile: e.target.value })}>{['0xA3', '0xA0', '0xA1', '0xA4', '0xA5'].map((p) => <option key={p} value={p}>{PROFILE_NAMES[p]}</option>)}</select>
             </label>
-          </div>
+            <p className="muted small">Presses within about 2 s are ignored, like AWCC. Alien Cockpit catches the key even when an admin window is in front.</p>
+          </>
         )}
       </Section>
-      <FanBoost controls={controls} fans={fans} />
       <FanGraphs points={history} fans={fans} title="last minutes" />
-      <Section title="All fans · hover for any moment" className="span3">
-        <Chart points={history} hover={hover} onHover={setHover} series={fans.map((f, i) => ({ name: hex(f.id), color: COL.fans[i % 4], unit: '', values: history.map((p) => p.fans[i] ?? null) }))} />
-      </Section>
-      <Section title="Custom fan curve" className="span3" right={<span className="lbl">saved · applies when fan control unlocks</span>}>
+      <Section title="Custom fan curve" right={<span className="lbl">applies when fan control unlocks</span>}>
         <div className="row">{(status?.lists?.fans ?? ['0x32', '0x33', '0x3B', '0x3C']).map((f) => <button key={f} className={f === sel ? 'chip on' : 'chip'} onClick={() => setSel(f)}>{f}</button>)}</div>
         <CurveEditor points={curve} onChange={(p) => settings && save({ ...settings, fanCurves: { ...settings.fanCurves, [sel]: p } })} />
         <LockedWhy reasons={controls?.fans.reasons ?? []} />
       </Section>
+      <Section title="All fans · hover for any moment" className="span2">
+        <Chart points={history} hover={hover} onHover={setHover} series={fans.map((f, i) => ({ name: hex(f.id), color: COL.fans[i % 4], unit: '', values: history.map((p) => p.fans[i] ?? null) }))} />
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Power: clocks, where the watts go, load
+export function PowerPage({ history }: { history: Point[] }) {
+  const clk = useClocks();
+  const [hover, setHover] = useState<number | null>(null);
+  const shown = hover != null ? history[hover] : history[history.length - 1] ?? null;
+  return (
+    <div className="cockpit">
+      <Section title="Clocks · live, like CPU-Z and GPU-Z" className="span3">
+        <ClocksPanel c={clk} />
+      </Section>
+      <Section title="Power · where it goes" className="span3">
+        <PowerPanel c={clk} />
+      </Section>
+      <Section title="Power and load · each line on its own scale · hover for any moment" className="span2">
+        <LoadChart points={history} hover={hover} onHover={setHover} series={loadSeries(history)} />
+      </Section>
+      <Moment p={shown} live={hover == null} className="" />
     </div>
   );
 }
@@ -303,7 +344,42 @@ export function Performance({ status, history, controls, settings, save }: { sta
 // ---------------------------------------------------------------- fan boost and fan graphs
 const LEVELS = [0, 25, 50, 75, 100];
 
-function FanBoost({ controls, fans }: { controls: Controls | null; fans: Fan[] }) {
+/** The fans where they sit in the laptop, seen from above as you sit (`fanLayout`): the graphics side on the
+ * left, the processor side on the right, each primary (larger) at the rear corner and its secondary (smaller)
+ * in front of it. Other machines: a row. `onPick`: a fan clicked (Thermals: boost just that one). */
+function FanLayout({ fans, compact, flagOf, selected, onPick }: {
+  fans: Fan[]; compact?: boolean; flagOf: (f: Fan) => ReturnType<typeof fanFlag>; selected: string | null; onPick?: (id: string) => void;
+}) {
+  const slots = fanLayout(fans);
+  const rotor = (f: Fan, size?: 'lg' | 'sm', name?: string) => {
+    const id = hex(f.id);
+    const r = <FanRotor rpm={f.rpm} max={f.max_rpm} label={name ?? zoneName(fans, f)} id={id} size={size} {...flagOf(f)} />;
+    return onPick ? (
+      <div key={f.id} className={`fan-slot ${selected === id ? 'on' : ''}`} role="button" tabIndex={0} aria-pressed={selected === id}
+        onClick={() => onPick(id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(id); } }}>{r}</div>
+    ) : <div key={f.id} className="fan-slot">{r}</div>;
+  };
+  if (!slots) return <div className={compact ? 'rotors four' : 'rotors'}>{fans.map((f) => rotor(f))}</div>;
+  const side = (s: 'left' | 'right') => slots.filter((x) => x.side === s).map((x) => rotor(x.fan, x.primary ? 'lg' : 'sm', x.name));
+  return (
+    <div className={`chassis ${compact ? 'compact' : ''}`} aria-label="The fans where they sit, seen from above">
+      <span className="lbl ch-edge">Rear · vents</span>
+      <div className="ch-grid">
+        <div className="ch-col">{side('left')}</div>
+        <div className="ch-mid" aria-hidden><span className="ch-chip">GPU</span><span className="ch-chip">CPU</span></div>
+        <div className="ch-col">{side('right')}</div>
+      </div>
+      <span className="lbl ch-edge front">{compact ? 'Front' : 'Front · keyboard'}</span>
+    </div>
+  );
+}
+
+/** The fans spinning, with boost on top of the firmware's curve. `compact`: the Cockpit's panel (all fans at once,
+ * smaller rotors); else the Thermals panel (one fan or all). */
+function FanBoost({ controls, status, history, compact }: { controls: Controls | null; status: Status | null; history: Point[]; compact?: boolean }) {
+  const s = status?.snapshot;
+  const fans = s?.fans ?? [];
+  const stuck = stuckFans(history, fans);
   const [which, setWhich] = useState<'all' | string>('all');
   const [pending, setPending] = useState<number | null>(null);
   const [res, setRes] = useState<{ ok: boolean; text: string } | null>(null);
@@ -324,23 +400,30 @@ function FanBoost({ controls, fans }: { controls: Controls | null; fans: Fan[] }
       setPending(null);
     }
   };
+  const on = controls?.fans.enabled ?? false;
   return (
-    <Section title="Fan boost · more cooling on top of the firmware's curve" className="span3" right={<span className="lbl">{controls?.fans.enabled ? 'on' : 'unavailable'}</span>}>
+    <Section title={compact ? 'Fans · live' : 'Fans · boost on top of the firmware\'s curve'} className={compact ? '' : 'span2'} right={<span className="lbl">{on ? `boost ${current == null ? 'mixed' : current ? `+${current}%` : 'off'}` : 'boost unavailable'}</span>}>
+      {!s ? <p className="muted">No fan readings without the hardware service.</p> : (
+        <FanLayout fans={fans} compact={compact} flagOf={(f) => fanFlag(f, s, stuck)}
+          selected={compact || which === 'all' ? null : which} onPick={compact ? undefined : (id) => setWhich(which === id ? 'all' : id)} />
+      )}
       <div className="boost">
-        <div className="seg small">
-          <button className={which === 'all' ? 'on' : ''} onClick={() => setWhich('all')}>All fans</button>
-          {ids.map((f) => <button key={f} className={which === f ? 'on' : ''} onClick={() => setWhich(f)}>{f}</button>)}
-        </div>
+        {!compact && (
+          <div className="seg small">
+            <button className={which === 'all' ? 'on' : ''} onClick={() => setWhich('all')}>All fans</button>
+            {ids.map((f) => <button key={f} className={which === f ? 'on' : ''} onClick={() => setWhich(f)}>{f}</button>)}
+          </div>
+        )}
         <div className="levels">
           {LEVELS.map((l) => (
-            <Tip key={l} text={l === 0 ? 'Off: the firmware alone decides the speed.' : `Adds ${l}% boost. In Full Speed and G-Mode the fans are already near their limit; boost helps most in Balanced and Performance.`}>
-              <button className={`lvl ${current === l ? 'on' : ''} ${pending === l ? 'pending' : ''}`} disabled={!controls?.fans.enabled || pending != null} onClick={() => apply(l)}>{l === 0 ? 'Off' : l === 100 ? 'Max' : `+${l}%`}</button>
+            <Tip key={l} text={l === 0 ? 'Off: the firmware alone decides the speed.' : `Adds ${l}% boost to ${which === 'all' ? 'every fan' : which}. In Full Speed and G-Mode the fans are already near their limit; boost helps most in Balanced and Performance.`}>
+              <button className={`lvl ${current === l ? 'on' : ''} ${pending === l ? 'pending' : ''}`} disabled={!on || pending != null} onClick={() => apply(l)}>{l === 0 ? 'Off' : l === 100 ? 'Max' : `+${l}`}</button>
             </Tip>
           ))}
         </div>
       </div>
       {res && <span className={res.ok ? 'm-res ok' : 'm-res bad'}>{res.text}</span>}
-      <LockedWhy reasons={controls?.fans.enabled ? controls.fans.notes ?? [] : controls?.fans.reasons ?? []} />
+      {!compact && <LockedWhy reasons={on ? controls?.fans.notes ?? [] : controls?.fans.reasons ?? []} />}
     </Section>
   );
 }
@@ -366,35 +449,71 @@ export function FanGraphs({ points, fans, title }: { points: Point[]; fans: Fan[
   );
 }
 
-// ---------------------------------------------------------------- History (the daily log)
-export function History() {
+// ---------------------------------------------------------------- Timeline (live readings and the daily log)
+export function Timeline({ live }: { live: Point[] }) {
   const [days, setDays] = useState<LogDay[] | null>(null);
   const [day, setDay] = useState<string | null>(null);
-  const [points, setPoints] = useState<Point[]>([]);
+  const [logged, setLogged] = useState<Point[]>([]);
   const [hover, setHover] = useState<number | null>(null);
-  useEffect(() => { api.logDays().then((d) => { setDays(d.days); if (d.days[0]) setDay(d.days[0].day); }); }, []);
-  useEffect(() => { if (day) api.logRead(day).then((p) => { setPoints(p); setHover(null); }); }, [day]);
+  useEffect(() => { api.logDays().then((d) => setDays(d.days)); }, []);
+  useEffect(() => { if (day) api.logRead(day).then((p) => { setLogged(p); setHover(null); }); }, [day]);
+  // "Live": the readings since the app started, still arriving; a day: that day's log.
+  const points = day ? logged : live;
   const shown = hover != null ? points[hover] : points[points.length - 1] ?? null;
   const fans: Fan[] = (points.find((p) => p.fans.length)?.fans ?? []).map((_, i) => ({ id: [0x32, 0x33, 0x3b, 0x3c][i] ?? i, sensor: i % 2 === 0 ? 1 : 6, rpm: null, max_rpm: [4200, 4100, 3000, 3000][i] ?? null }));
   return (
     <div className="cockpit">
-      <Section title="Logged days" className="span3" right={<span className="lbl">{points.length} readings</span>}>
-        {days?.length === 0 && <p className="muted">No days logged yet. Logging is set in Settings.</p>}
-        <div className="row">{days?.map((d) => <button key={d.day} className={d.day === day ? 'chip on' : 'chip'} onClick={() => setDay(d.day)}>{new Date(d.day + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} <span className="muted">· {(d.bytes / 1_048_576).toFixed(1)} MB</span></button>)}</div>
-      </Section>
+      <div className="row span3 tl-days">
+        <button className={day == null ? 'chip on' : 'chip'} onClick={() => { setDay(null); setHover(null); }}><i className="dot live" /> Live</button>
+        {days?.map((d) => <button key={d.day} className={d.day === day ? 'chip on' : 'chip'} onClick={() => setDay(d.day)}>{new Date(d.day + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} <span className="muted">· {(d.bytes / 1_048_576).toFixed(1)} MB</span></button>)}
+        {days?.length === 0 && <span className="muted small">No days logged yet. Logging is set in Settings.</span>}
+        <span className="spacer" /><span className="lbl">{points.length} readings</span>
+      </div>
       {points.length > 0 && (
         <>
-          <Section title="Power and load · hover for any moment" className="span2">
-            <LoadChart points={points} hover={hover} onHover={setHover} series={loadSeries(points)} />
+          <Section title={day ? 'The day · mode changes marked · hover for any moment' : 'Since the app started · mode changes marked'} className="span3">
+            <TimelineBand points={points} hover={hover} onHover={setHover} />
           </Section>
-          <Moment p={shown} live={false} />
           <Section title="Temperature" className="span2">
             <Chart points={points} min={30} max={105} hover={hover} onHover={setHover} series={[{ name: 'CPU', color: COL.cpu, unit: '°', values: points.map((p) => p.cpu_c) }, { name: 'GPU', color: COL.gpu, unit: '°', values: points.map((p) => p.gpu_c) }]} />
           </Section>
-          {fans.length > 0 && <FanGraphs points={points} fans={fans} title="this day" />}
+          <Moment p={shown} live={false} />
+          <Section title="Power and load" className="span2">
+            <LoadChart points={points} hover={hover} onHover={setHover} series={loadSeries(points)} />
+          </Section>
+          {fans.length > 0 && <FanGraphs points={points} fans={fans} title={day ? 'this day' : 'since the app started'} />}
         </>
       )}
     </div>
+  );
+}
+
+/** The whole span at a glance: CPU temperature as a band, a mark wherever the thermal mode changed, and the
+ * moment under the pointer, shared with the charts below. */
+function TimelineBand({ points, hover, onHover }: { points: Point[]; hover: number | null; onHover: (i: number | null) => void }) {
+  const W = 1000, H = 44;
+  const n = Math.max(2, points.length);
+  const area = useMemo(() => {
+    const xs = points.map((_, i) => (i / (n - 1)) * W);
+    const y = (c: number | null) => (c == null ? H : H - (Math.max(30, Math.min(105, c)) - 30) / 75 * H);
+    return `M0 ${H} ` + points.map((p, i) => `L${xs[i].toFixed(1)} ${y(p.cpu_c).toFixed(1)}`).join(' ') + ` L${W} ${H} Z`;
+  }, [points, n]);
+  const marks = useMemo(() => modeChanges(points), [points]);
+  const move = (e: React.PointerEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    onHover(Math.max(0, Math.min(points.length - 1, Math.round(((e.clientX - r.left) / r.width) * (n - 1)))));
+  };
+  const at = (i: number) => `${(i / (n - 1)) * 100}%`;
+  const first = points[0], last = points[points.length - 1];
+  return (
+    <>
+      <div className="tl-band" onPointerMove={move} onPointerLeave={() => onHover(null)}>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true"><path d={area} /></svg>
+        {marks.map((m, k) => <i key={m.i} className={`tl-mark ${m.to === 'G-Mode' ? 'g' : ''}`} style={{ left: at(m.i) }} title={`${new Date(points[m.i].at).toLocaleTimeString()}: ${m.from} → ${m.to}`}>{(marks.length <= 8 || k % Math.ceil(marks.length / 8) === 0) && <span>{m.to}</span>}</i>)}
+        {hover != null && <i className="tl-cursor" style={{ left: at(hover) }} />}
+      </div>
+      <div className="tl-axis mono"><span>{first ? new Date(first.at).toLocaleTimeString() : ''}</span><span>{marks.length ? `${marks.length} mode change${marks.length > 1 ? 's' : ''}` : 'no mode changes'}</span><span>{last ? new Date(last.at).toLocaleTimeString() : ''}</span></div>
+    </>
   );
 }
 
@@ -447,7 +566,7 @@ export function HealthView() {
 }
 
 // ---------------------------------------------------------------- Settings
-export function SettingsView({ settings, save, error }: { settings: Settings | null; save: (s: Settings) => void; error: string | null }) {
+export function SettingsView({ settings, save, error, go }: { settings: Settings | null; save: (s: Settings) => void; error: string | null; go: (p: Page) => void }) {
   const s = settings;
   if (!s) return null;
   return (
@@ -469,7 +588,7 @@ export function SettingsView({ settings, save, error }: { settings: Settings | n
         </div>
         <p className="muted small">Windows' "reduce motion" setting turns all motion off regardless.</p>
       </Section>
-      <Section title="Live readings" className="span3">
+      <Section title="Live readings">
         <label className="switch">
           <input type="checkbox" checked={s.liveAdmin} onChange={(e) => save({ ...s, liveAdmin: e.target.checked })} />
           <span className="sw" aria-hidden />
@@ -481,19 +600,16 @@ export function SettingsView({ settings, save, error }: { settings: Settings | n
           <span><b>Start at sign-in</b><small className="muted">Starts in the tray when you sign in, as administrator without a prompt (a Task Scheduler task, set up once while Alien Cockpit runs as administrator). Turning it off removes the task.</small></span>
         </label>
       </Section>
-      <Section title="Safety" className="span3">
-        <label className="field"><span className="lbl">Emergency fans at {s.emergencyC} °C</span><input type="range" min={85} max={98} value={s.emergencyC} onChange={(e) => save({ ...s, emergencyC: Number(e.target.value) })} /></label>
-        <p className="muted small">When a sensor stays this hot, every fan goes to full until it cools. It can be lowered, never raised past 98 °C.</p>
-      </Section>
-      <Section title="Alerts and data" className="span3">
+      <Section title="Alerts and data">
         <label className="check"><input type="checkbox" checked={s.notify} onChange={(e) => save({ ...s, notify: e.target.checked })} /> Windows notifications for fan faults, stale sensors and boost-key switches</label>
         <label className="check"><input type="checkbox" checked={s.demo} onChange={(e) => save({ ...s, demo: e.target.checked })} /> Show demo data (the October 7 capture) when nothing live is available</label>
+        <div className="row"><span className="muted small">Emergency fans ({s.emergencyC} °C) are on Thermals now, beside the fans.</span><button className="chip" onClick={() => go('Thermals')}>Thermals</button></div>
       </Section>
-      <LogSection s={s} save={save} />
-      <Section title="Drivers and BIOS" className="span3">
+      <Section title="Drivers and BIOS">
         <p>Installs stay with Dell's own signed tool; Alien Cockpit never flashes a BIOS.</p>
         <div className="row"><button className="btn" onClick={() => api.openAlienwareUpdate()}>Open Alienware Update</button></div>
       </Section>
+      <LogSection s={s} save={save} />
       {error && <div className="note warn span3">{error}</div>}
     </div>
   );

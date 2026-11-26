@@ -126,6 +126,31 @@ export interface LightingSettings {
   reactive?: ReactiveSettings;
   /** The live animation (missing in older settings: off). */
   live?: LiveSettings;
+  /** Day and night (missing in older settings: off). */
+  daylight?: DaylightSettings;
+}
+/** Day and night: brighter by day, dimmer at night, following the sun where you are (`lighting.daylight`). */
+export interface DaylightSettings {
+  on: boolean;
+  /** brightness in daylight, 0..100 % */
+  day: number;
+  /** brightness at night, 0..100 % (0: off after dusk) */
+  night: number;
+  /** 'auto' (the time zone's city), a city from the list, or 'custom' (lat/lon) */
+  place: string;
+  lat: number;
+  lon: number;
+}
+export interface SunPlace { name: string; lat: number; lon: number; from: 'zone' | 'city' | 'custom' | 'estimate'; zone?: string }
+/** Today's sun at the place (ms since the epoch; null when it doesn't happen, as in the polar night). */
+export interface SunToday {
+  place: SunPlace;
+  now: number; nowPct: number; elevation: number; phase: 'day' | 'night' | 'dawn' | 'dusk';
+  dayStart: number; offsetS: number;
+  dawn: number | null; sunrise: number | null; noon: number; sunset: number | null; dusk: number | null;
+  noonElevation: number; dayMin: number;
+  /** every 15 minutes from local midnight: [ms, brightness %, sun height °] */
+  curve: [number, number, number][];
 }
 export interface KeyInfo { id: number; name: string; row: number; col: number; width: number; group?: string; present?: boolean }
 export interface LightingStatus {
@@ -298,6 +323,57 @@ let demoLight: LightingStatus = {
 const copy = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
 const later = <T,>(f: () => T, ms = 140) => new Promise<T>((res, rej) => setTimeout(() => { try { res(f()); } catch (e) { rej(e); } }, ms));
 const applied = (text: string) => ({ ok: true, at: Date.now(), text });
+// ---------------------------------------------------------------- demo day and night (browser only)
+// The app reckons the sun in Rust (cockpit-core's daylight.rs, NOAA's equations); the preview uses this shorter
+// approximation, good to a few minutes, so the page can be worked on without the laptop.
+const DEMO_CITIES: Record<string, [number, number]> = { Dhaka: [23.81, 90.41], London: [51.51, -0.13], 'New York': [40.71, -74.01], Tokyo: [35.68, 139.69], Sydney: [-33.87, 151.21], Reykjavik: [64.15, -21.94], Singapore: [1.35, 103.82] };
+function demoElevation(ms: number, lat: number, lon: number): number {
+  const d = ms / 86_400_000 - 10_957.5; // days from J2000
+  const rad = Math.PI / 180;
+  const g = (357.529 + 0.98560028 * d) * rad;
+  const q = 280.459 + 0.98564736 * d;
+  const L = (q + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * rad;
+  const e = (23.439 - 0.00000036 * d) * rad;
+  const dec = Math.asin(Math.sin(e) * Math.sin(L));
+  const ra = Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L)) / rad;
+  const eot = (((q - ra) % 360) + 540) % 360 - 180; // degrees
+  const utcMin = ((ms % 86_400_000) + 86_400_000) % 86_400_000 / 60_000;
+  const ha = ((utcMin + 4 * (eot + lon)) / 4 - 180) * rad;
+  return Math.asin(Math.sin(lat * rad) * Math.sin(dec) + Math.cos(lat * rad) * Math.cos(dec) * Math.cos(ha)) / rad;
+}
+function demoToday(d: DaylightSettings): { today: SunToday; cities: string[] } {
+  const [lat, lon, name, from] = d.place === 'custom' ? [d.lat, d.lon, `${d.lat.toFixed(2)}°, ${d.lon.toFixed(2)}°`, 'custom' as const]
+    : DEMO_CITIES[d.place] ? [...DEMO_CITIES[d.place], d.place, 'city' as const] : [...DEMO_CITIES.Dhaka, 'Dhaka', 'zone' as const];
+  const share = (el: number) => { const x = Math.min(1, Math.max(0, (el + 6) / 12)); return x * x * (3 - 2 * x); };
+  const pct = (el: number) => Math.round(d.night + (d.day - d.night) * share(el));
+  const now = Date.now();
+  const offsetS = -new Date(now).getTimezoneOffset() * 60;
+  const local = now + offsetS * 1000;
+  const dayStart = local - (local % 86_400_000) - offsetS * 1000;
+  const cross = (level: number, rising: boolean) => {
+    let prev = demoElevation(dayStart, lat, lon);
+    for (let i = 1; i <= 1440; i++) {
+      const t = dayStart + i * 60_000, el = demoElevation(t, lat, lon);
+      if (rising ? prev < level && el >= level : prev >= level && el < level) return t;
+      prev = el;
+    }
+    return null;
+  };
+  const curve: [number, number, number][] = Array.from({ length: 97 }, (_, i) => { const t = dayStart + i * 900_000; const el = demoElevation(t, lat, lon); return [t, pct(el), Math.round(el * 10) / 10]; });
+  const noonPt = curve.reduce((a, b) => (b[2] > a[2] ? b : a));
+  const el = demoElevation(now, lat, lon);
+  const sunrise = cross(-0.833, true), sunset = cross(-0.833, false);
+  return {
+    today: {
+      place: { name, lat, lon, from, ...(from === 'zone' ? { zone: 'Bangladesh Standard Time' } : {}) },
+      now, nowPct: pct(el), elevation: el, phase: el >= 6 ? 'day' : el <= -6 ? 'night' : demoElevation(now + 300_000, lat, lon) > el ? 'dawn' : 'dusk',
+      dayStart, offsetS, dawn: cross(-6, true), sunrise, noon: noonPt[0], sunset, dusk: cross(-6, false), noonElevation: noonPt[2],
+      dayMin: sunrise && sunset ? Math.round((sunset - sunrise) / 60_000) : noonPt[2] > 0 ? 1440 : 0, curve,
+    },
+    cities: Object.keys(DEMO_CITIES).sort(),
+  };
+}
+
 const demoLighting = {
   status: () => later(() => copy(demoLight), 60),
   set: (s: LightingSettings) => later(() => {
@@ -329,6 +405,8 @@ export const api = {
   lightingPreviewKey: (id: number, color: Rgb) => (inApp ? call<LightingStatus>('lighting_preview_key', { id, color }) : demoLighting.previewKey(id, color)),
   lightingRestoreAwcc: () => (inApp ? call<LightingStatus>('lighting_restore_awcc') : demoLighting.restoreAwcc()),
   lightingImportAwcc: () => (inApp ? call<LightingStatus>('lighting_import_awcc') : demoLighting.importAwcc()),
+  /** Today's sun and the brightness through the day for these (possibly unsaved) day and night settings. */
+  daylightToday: (daylight: DaylightSettings) => (inApp ? call<{ today: SunToday; cities: string[] }>('daylight_today', { daylight }) : later(() => demoToday(daylight), 40)),
   status: () => (inApp ? call<Status>('status') : Promise.resolve(demo.status())),
   /** Chart points: all of them, or only those after `after` (the newest `t` the window already has). */
   history: (after?: number) => (inApp ? call<Point[]>('history', { after: after ?? null }) : Promise.resolve(demo.history(after))),

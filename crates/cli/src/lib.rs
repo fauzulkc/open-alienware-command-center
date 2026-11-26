@@ -1175,7 +1175,7 @@ fn lighting_change(ctx: &mut Ctx, dry_run: bool, f: impl FnOnce(&mut LightingSet
     all.lighting = l.clone();
     all.validate().map_err(Fail::Refused)?;
     let custom = l.mode == Mode::Custom;
-    let power = PowerState::default();
+    let power = PowerState { daylight: cockpit_core::daylight::now_pct(&l.daylight), ..Default::default() };
     if dry_run {
         let (kb, zones) = if custom { (lightctl::plan_from(prev, &l, &power).map_err(Fail::Refused)?, lightctl::zone_plan(&l, &power).map_err(Fail::Refused)?) } else { (Vec::new(), Vec::new()) };
         let note = if custom { "Mode custom: a real run saves and sends these." } else { "Mode awcc: a real run saves, and sends nothing." };
@@ -1305,7 +1305,7 @@ fn per_s(reports: &[usize]) -> String {
 /// report counts; nothing is saved or sent. The saved settings are used, never changed.
 fn lighting_reactive(ctx: &mut Ctx, seconds: Option<u64>, dry_run: bool) -> R {
     let saved = Settings::load_from(&ctx.settings_path()).lighting;
-    let power = PowerState::default();
+    let power = PowerState { daylight: cockpit_core::daylight::now_pct(&saved.daylight), ..Default::default() };
     if dry_run {
         let mut l = saved;
         l.mode = Mode::Custom;
@@ -1405,7 +1405,7 @@ fn lighting_clock(ctx: &mut Ctx, seconds: Option<u64>, base: &str, dry_run: bool
     use cockpit_core::clock;
     let base = clock::ClockBase::parse(base).ok_or_else(|| Fail::Refused(format!("'{base}' isn't a base: use dim, off or preset")))?;
     let mut l = Settings::load_from(&ctx.settings_path()).lighting;
-    let power = PowerState::default();
+    let power = PowerState { daylight: cockpit_core::daylight::now_pct(&l.daylight), ..Default::default() };
     if dry_run {
         l.mode = Mode::Custom;
         l.keyboard.on = true;
@@ -1470,7 +1470,7 @@ impl mousepaint::PointerSource for SimPointer {
 fn lighting_mouse(ctx: &mut Ctx, seconds: Option<u64>, fps: u32, fade_ms: u64, dim: u32, look: &str, dry_run: bool) -> R {
     let (base, brush) = mousepaint::look(look).ok_or_else(|| Fail::Refused(format!("'{look}' isn't a look: use glow, uncover, reveal, boost or screen")))?;
     let mut l = Settings::load_from(&ctx.settings_path()).lighting;
-    let power = PowerState::default();
+    let power = PowerState { daylight: cockpit_core::daylight::now_pct(&l.daylight), ..Default::default() };
     if dry_run {
         l.mode = Mode::Custom;
         l.keyboard.on = true;
@@ -1531,7 +1531,7 @@ impl screenmirror::ScreenSource for SimScreen {
 fn lighting_screen(ctx: &mut Ctx, seconds: Option<u64>, amb: screenmirror::Ambient, gpu: bool, dry_run: bool) -> R {
     let fps = amb.fps;
     let mut l = Settings::load_from(&ctx.settings_path()).lighting;
-    let power = PowerState::default();
+    let power = PowerState { daylight: cockpit_core::daylight::now_pct(&l.daylight), ..Default::default() };
     if dry_run {
         l.mode = Mode::Custom;
         l.keyboard.on = true;
@@ -1611,7 +1611,7 @@ fn lighting_live(ctx: &mut Ctx, seconds: Option<u64>, o: LiveOverrides) -> R {
         }
         l.live.mouse = m;
     }
-    let power = PowerState { display_off: o.display_off, ..Default::default() };
+    let power = PowerState { display_off: o.display_off, daylight: cockpit_core::daylight::now_pct(&l.daylight), ..Default::default() };
     if o.display_off {
         l.clock_on_display_off = true;
     }
@@ -1650,7 +1650,7 @@ fn lighting_live(ctx: &mut Ctx, seconds: Option<u64>, o: LiveOverrides) -> R {
     ctx.clock.catch_stop();
     let start = ctx.clock.now_ms();
     let prev = shown_by(&l);
-    let text = live::run_windows(io.as_mut(), &l, &power, prev, l.pause_awcc.then_some(pauser.as_ref()), &mut GlowClock(&mut *ctx.clock), Some(&mut presses), &mut |now| seconds.is_some_and(|s| now.saturating_sub(start) >= s * 1_000)).map_err(Fail::Error)?;
+    let text = live::run_windows(io.as_mut(), &l, &power, prev, l.pause_awcc.then_some(pauser.as_ref()), &mut GlowClock(&mut *ctx.clock), Some(&mut presses), None, &mut |now| seconds.is_some_and(|s| now.saturating_sub(start) >= s * 1_000)).map_err(Fail::Error)?;
     ctx.emit(json!({ "text": text }), &text)
 }
 

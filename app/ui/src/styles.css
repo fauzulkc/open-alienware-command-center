@@ -4,6 +4,8 @@
    boxes: soft surfaces, generous radius, hairlines at half strength, numbers that lead. */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; }
+/* The window never scrolls: only `.main` does (clip, unlike hidden, can't be scrolled by focus or scrollIntoView). */
+#root { overflow: clip; }
 body {
   background: var(--canvas);
   color: var(--ink); font-family: var(--font-sans); font-size: 14px; line-height: 1.55; letter-spacing: -0.005em;
@@ -28,7 +30,7 @@ code { font-family: var(--font-mono); font-size: 11.5px; padding: 1px 6px; borde
   --depth: 0 1px 1px oklch(0 0 0 / 0.10), 0 2px 4px -1px oklch(0 0 0 / 0.10), 0 12px 28px -10px oklch(0 0 0 / 0.28);
   --raised: inset 0 1px 0 color-mix(in oklab, white 9%, transparent), 0 1px 2px oklch(0 0 0 / 0.28), 0 0 0 1px var(--edge);
   --well: inset 0 1px 2px oklch(0 0 0 / 0.16), inset 0 0 0 1px var(--edge);
-  --chart-h: clamp(130px, 22vh, 240px);
+  --chart-h: clamp(120px, 18vh, 190px);
 }
 
 /* ---------- shell ---------- */
@@ -53,7 +55,10 @@ html[data-text='large'] .app { zoom: 1.08; width: calc(100vw / 1.08); height: ca
 .themes { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); }
 .themes button { height: 24px; padding: 0 10px; border-radius: 999px; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 .themes button.on { background: var(--surface); color: var(--ink); box-shadow: var(--raised); }
-.main { overflow-y: auto; overflow-x: hidden; padding: clamp(12px, 2vw, 22px) clamp(12px, 2.2vw, 26px) 40px; }
+/* Positioned, so anything absolutely placed inside a page stays in the page's scroller: a switch's hidden
+   checkbox placed against the window made the document taller than the window, and clicking a switch far down
+   (Follow the sun, 2026-11-26) scrolled the whole window, topbar and all, off the screen. */
+.main { position: relative; overflow-y: auto; overflow-x: hidden; padding: clamp(12px, 2vw, 22px) clamp(12px, 2.2vw, 26px) 40px; }
 
 /* ---------- layout ---------- */
 .cockpit { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(10px, 1.4vw, 16px); max-width: 1480px; margin: 0 auto; }
@@ -69,21 +74,28 @@ html[data-text='large'] .app { zoom: 1.08; width: calc(100vw / 1.08); height: ca
 .verdict.warm .v-dot { background: var(--caution-major); } .verdict.ok .v-dot { background: var(--pos-major); }
 
 /* hero: two gauges around the mode */
-.hero { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(150px, 0.75fr) minmax(0, 2fr) minmax(150px, 0.75fr); grid-template-areas: 'cpu mid gpu'; align-items: center; justify-items: center; gap: clamp(8px, 1.6vw, 18px); padding: clamp(12px, 1.6vw, 18px) clamp(12px, 2vw, 22px); border-radius: 20px;
+.hero { grid-column: span 2; display: grid; grid-template-columns: minmax(150px, 0.75fr) minmax(0, 2fr) minmax(150px, 0.75fr); grid-template-areas: 'cpu mid gpu'; align-items: center; justify-items: center; gap: clamp(8px, 1.6vw, 18px); padding: clamp(12px, 1.6vw, 18px) clamp(12px, 2vw, 22px); border-radius: 20px;
   background: var(--surface); border: 1px solid var(--edge); box-shadow: var(--lip), var(--depth); }
 .hero > :first-child { grid-area: cpu; } .hero > .hero-mid { grid-area: mid; } .hero > :last-child { grid-area: gpu; }
 .hero-mid { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
 .mode-now { font-family: var(--font-display); font-weight: 800; font-size: clamp(26px, 3vw, 40px); letter-spacing: -0.035em; line-height: 1.05; }
-.gauge { position: relative; width: clamp(150px, 17vw, 220px); aspect-ratio: 220 / 196; display: grid; place-items: center; }
+/* The gauge is drawn in a 160 x 140 box: the ring centred at (80, 80), radius 66, 10 wide, so its inner circle is
+   76 % of the gauge's width across, and the 120° gap at the bottom is open below y = 118. Its text is sized in
+   container units (cqw: % of the gauge's width), so it keeps those proportions at every size. */
+.gauge { position: relative; width: clamp(140px, 13vw, 200px); aspect-ratio: 160 / 140; container-type: inline-size; }
 .gauge svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .g-track { fill: none; stroke: color-mix(in oklab, var(--ink) 9%, transparent); stroke-width: 10; stroke-linecap: round; }
 .g-fill { fill: none; stroke-width: 10; stroke-linecap: round; transition: d var(--dur-slow) var(--ease), stroke var(--dur-slow) var(--ease); }
 .g-zone { fill: none; stroke-width: 2.5; stroke-linecap: round; opacity: 0.8; }
 .g-zone.warm { stroke: var(--caution-signal); } .g-zone.hot { stroke: var(--neg-signal); }
-.g-read { display: flex; flex-direction: column; align-items: center; gap: 2px; margin-top: 8px; }
-.g-val { font-family: var(--font-display); font-weight: 800; font-size: 46px; letter-spacing: -0.04em; line-height: 1; font-variant-numeric: tabular-nums; transition: color var(--dur-slow) var(--ease); }
-.g-val small { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--muted); margin-left: 3px; }
-.g-sub { font-size: 12px; color: var(--muted); }
+.g-core { position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%); width: 66cqw; display: flex; flex-direction: column; align-items: center; gap: 1.5cqw; text-align: center; }
+.g-core .lbl { font-size: clamp(8px, 5.6cqw, 11px); }
+/* The digits alone are centred on the ring (the unit hangs off their right edge, outside the flow), so 7, 42 and
+   100 all sit on the same centre and nothing else moves when the count of digits changes. Tabular figures keep
+   a reading the same width as it changes (82 -> 87). */
+.g-val { position: relative; display: block; font-family: var(--font-display); font-weight: 800; font-size: 23.5cqw; letter-spacing: -0.04em; padding-right: 0.04em; line-height: 0.9; font-variant-numeric: tabular-nums; white-space: nowrap; transition: color var(--dur-slow) var(--ease); }
+.g-val small { position: absolute; left: 100%; top: 0.18em; font-family: var(--font-mono); font-size: 0.28em; font-weight: 600; letter-spacing: 0; line-height: 1; color: var(--muted); margin-left: 0.22em; }
+.g-sub { position: absolute; left: 0; right: 0; bottom: 0; text-align: center; font-size: clamp(9px, 6.6cqw, 12px); line-height: 1.2; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* mode dock */
 .dock { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
@@ -137,7 +149,9 @@ html[data-text='large'] .app { zoom: 1.08; width: calc(100vw / 1.08); height: ca
 .clk-row { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 3px 0; font-size: 12px; }
 .clk-lbl { color: var(--muted); }
 .clk-bar { height: 6px; border-radius: 999px; background: var(--glass); box-shadow: var(--sunk); overflow: visible; }
-.clk-bar i { display: block; height: 100%; border-radius: inherit; background: var(--hue-red-mark); transition: width 0.6s ease, background 0.6s ease, box-shadow 0.6s ease; }
+/* Bars that change every second grow with a transform the compositor animates (no repaint); their length is
+   scaleX, set inline. Measured: per-second width/colour transitions cost ~4 % GPU (docs/performance.md). */
+.clk-bar i { display: block; width: 100%; height: 100%; border-radius: inherit; background: var(--hue-red-mark); transform-origin: left center; transition: transform 0.6s ease; }
 .pw-row { grid-template-columns: 96px minmax(0, 1fr) auto; }
 .pw-sub .clk-lbl { padding-left: 12px; font-size: 11px; }
 .pw-sub .clk-bar { height: 4px; }
@@ -146,17 +160,19 @@ html[data-text='large'] .app { zoom: 1.08; width: calc(100vw / 1.08); height: ca
 .procs li { display: grid; grid-template-columns: minmax(0, 1fr) 70px 74px; gap: 10px; align-items: center; }
 .p-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .p-bar { height: 5px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); overflow: hidden; }
-.p-bar i { display: block; height: 100%; border-radius: 999px; background: var(--ink); transition: width var(--dur-slow) var(--ease); }
+.p-bar i { display: block; width: 100%; height: 100%; border-radius: 999px; background: var(--ink); transform-origin: left center; transition: transform var(--dur-slow) var(--ease); }
 .p-val { text-align: right; font-size: 12px; }
 
 /* fan rotors */
 .rotors { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 14px 10px; }
 .rotor { display: flex; flex-direction: column; align-items: center; gap: 2px; position: relative; }
-.rotor svg { width: clamp(76px, 8vw, 96px); height: auto; aspect-ratio: 1; }
+.r-dial { position: relative; width: clamp(76px, 8vw, 96px); aspect-ratio: 1; }
+.r-dial svg, .r-spin { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* The blades turn as a layer of their own (a transform the compositor applies), so a frame doesn't repaint. */
+.r-spin { will-change: transform; }
 .r-ring { fill: none; stroke: var(--soft); stroke-width: 1.5; }
 .r-well { fill: var(--etch); }
 .r-blades path { fill: color-mix(in oklab, var(--ink) 78%, transparent); }
-.r-ghost path { fill: var(--ink); }
 .r-hub { fill: var(--surface); stroke: var(--soft); stroke-width: 1.5; }
 .r-rpm { font-size: 15px; font-weight: 600; } .r-rpm small { color: var(--muted); font-size: 10px; }
 .r-pct { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.1; }
@@ -206,11 +222,11 @@ select, input[type='range'] { background: var(--etch-strong); border: 1px solid 
 .curve-pt { fill: var(--surface); stroke: var(--ink); stroke-width: 2; cursor: grab; }
 .axis { fill: var(--subtle); font-family: var(--font-mono); font-size: 10px; }
 /* fluid sizes: three columns wide, two at medium, one when narrow; the hero puts the mode under the gauges */
-@media (max-width: 1100px) { .cockpit { grid-template-columns: repeat(2, minmax(0, 1fr)); } .span2 { grid-column: 1 / -1; } .moment { grid-row: auto; }
+@media (max-width: 1100px) { .cockpit { grid-template-columns: repeat(2, minmax(0, 1fr)); } .span2, .hero, .lt-side { grid-column: 1 / -1; } .moment { grid-row: auto; }
   .hero { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: 'cpu gpu' 'mid mid'; } .gauge { width: clamp(150px, 30vw, 220px); } }
 @media (max-width: 760px) { .cockpit { grid-template-columns: minmax(0, 1fr); } .split, .split3, .toggles-grid { grid-template-columns: minmax(0, 1fr); }
   .gauge { width: clamp(130px, 40vw, 200px); } .procs li { grid-template-columns: minmax(0, 1fr) 50px 64px; } }
-@media (max-width: 980px) { .topbar .themes { display: none; }
+@media (max-width: 1100px) { .topbar .themes { display: none; }
   /* Every page stays reachable: the tabs get their own row instead of scrolling out of sight. */
   .topbar { flex-wrap: wrap; } .topbar .tabsbar { order: 5; flex: 1 1 100%; margin: 0 0 8px; justify-content: center; } }
 @media (max-width: 720px) { .brand-nm, .role, .pill-text { display: none; } .pill { padding: 0 9px; } }
@@ -253,7 +269,7 @@ select, input[type='range'] { background: var(--etch-strong); border: 1px solid 
 
 /* ---------- larger, more modern type ---------- */
 .verdict { font-size: 21px; }
-.g-val { font-size: clamp(36px, 4vw, 52px); }
+
 .tabsbar button { font-size: 14px; height: 32px; }
 .lbl { font-size: 10px; }
 .panel-h .lbl { font-size: 10.5px; }
@@ -270,7 +286,7 @@ html[data-fx-press='on'] button.rippling::after { content: ''; position: absolut
 
 /* ---------- settings switches ---------- */
 .toggles-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; margin-top: 14px; }
-.switch { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+.switch { position: relative; display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
 .switch input { position: absolute; opacity: 0; pointer-events: none; }
 .switch .sw { flex: none; width: 38px; height: 22px; border-radius: 999px; background: var(--etch-strong); box-shadow: var(--well); position: relative; transition: background var(--dur-base) var(--ease); margin-top: 1px; }
 .switch .sw::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform var(--dur-base) var(--ease), background var(--dur-base) var(--ease); }
@@ -309,7 +325,9 @@ html[data-fx-press='on'] button.rippling::after { content: ''; position: absolut
 }
 [data-theme='gray'] { --hi: color-mix(in oklab, white 9%, transparent); --lo: oklch(0 0 0 / 0.32); }
 
-.panel, .hero { background: var(--glass); border: 0; box-shadow: var(--bevel); backdrop-filter: blur(14px) saturate(1.05); }
+/* No backdrop blur on panels: they sit on the flat canvas colour, so the blur showed nothing, yet the GPU redid it
+   at 4K on every repaint under it (each rotor frame). Measured 2026-11-25: docs/performance.md. */
+.panel, .hero { background: var(--glass); border: 0; box-shadow: var(--bevel); }
 .topbar { background: transparent; border-bottom: 0; box-shadow: 0 1px 0 var(--lo), 0 2px 0 var(--hi); }
 .note { background: var(--glass); border: 0; box-shadow: var(--bevel), inset 3px 0 0 var(--caution-signal); }
 .mcard { background: transparent; border: 0; box-shadow: var(--bevel); }
@@ -379,3 +397,130 @@ input[type='color']:disabled { opacity: 0.45; cursor: not-allowed; }
 .swatch:disabled { cursor: default; }
 .zones { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px 18px; margin-bottom: 8px; }
 .zone { display: flex; align-items: center; gap: 10px; }
+
+/* ---------- the redesign, 2026-11-25: same look, tighter (docs/performance.md keeps it cheap) ---------- */
+/* top bar: temperatures and mode on every page, Find anything, the Settings gear */
+.vpill { cursor: pointer; }
+.vpill b { font-size: 11px; color: var(--ink); letter-spacing: 0; }
+.find { gap: 8px; cursor: pointer; text-transform: none; letter-spacing: 0; font-family: var(--font-sans); font-weight: 500; font-size: 12px; }
+.find svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.find-k { font-size: 10px; opacity: 0.8; }
+.winbtns svg.gear { width: 16px; height: 16px; stroke-width: 1.7; }
+.winbtns button.on { background: var(--glass-up); color: var(--ink); box-shadow: var(--lift); }
+@media (max-width: 1180px) { .find-t, .vpill { display: none; } }
+@media (max-width: 720px) { .find-k { display: none; } }
+
+/* Cockpit: four rotors in the fans panel beside the gauges; the keyboard as it is now */
+.rotors.four { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 4px; margin-bottom: 10px; }
+.rotors.four .r-dial { width: clamp(58px, 5vw, 84px); }
+.rotors.four .r-pct { font-size: 16px; }
+.rotors.four .r-rpm { font-size: 13px; }
+.rotors.four .lbl { font-size: 9px; text-align: center; }
+.boost .levels { flex-wrap: wrap; }
+.kb-glance { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: pointer; border-radius: 14px; }
+.kb-glance .kbmap { padding: 6px; }
+.glance-line { margin-top: 8px; }
+
+/* Timeline: the whole span with mode changes marked */
+.tl-days { margin: 0; }
+.tl-band { position: relative; height: 46px; margin-top: 20px; cursor: crosshair; border-radius: 8px; box-shadow: var(--sunk); }
+.tl-band svg { display: block; width: 100%; height: 100%; }
+.tl-band path { fill: color-mix(in oklab, var(--hue-red-mark) 24%, transparent); }
+.tl-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 2px; background: var(--ink); }
+.tl-mark.g { background: var(--neg-major); }
+.tl-mark span { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 3px; padding: 1px 7px; border-radius: 999px; background: var(--glass); box-shadow: var(--bevel); font-size: 10.5px; font-style: normal; white-space: nowrap; }
+.tl-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--muted); pointer-events: none; }
+.tl-axis { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10.5px; color: var(--subtle); }
+
+/* Lighting: the keyboard beside the layer stack; the selected layer's controls under it */
+.lt-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
+.lt-side { display: flex; flex-direction: column; gap: clamp(10px, 1.4vw, 16px); min-width: 0; }
+.layers { display: flex; flex-direction: column; gap: 6px; }
+.layer { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; align-items: center; text-align: left; padding: 9px 12px; border-radius: 12px; background: transparent; box-shadow: var(--bevel); color: var(--ink); }
+.layer.on { background: var(--glass-up); box-shadow: var(--lift); }
+.num { width: 26px; height: 26px; border-radius: 8px; box-shadow: var(--sunk); display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--muted); }
+.layer.on .num { color: var(--ink); }
+.layer-t b { display: block; font-weight: 600; }
+.layer-t small { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lt-under { display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; margin: 10px 0 4px; }
+.lt-under .swatches { display: flex; flex-wrap: wrap; gap: 5px; margin: 0; }
+.lt-under .swatch { width: 26px; height: 26px; }
+.lt-seg { justify-content: flex-start; }
+@media (max-width: 1100px) { .lt-side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); } }
+@media (max-width: 760px) { .lt-side { grid-template-columns: minmax(0, 1fr); } }
+
+/* Find anything (Ctrl K) and the result toast */
+.pal-scrim { position: fixed; inset: 0; z-index: 50; background: oklch(0.05 0.004 80 / 0.45); display: flex; justify-content: center; align-items: flex-start; padding-top: 11vh; }
+.palette { width: min(640px, 92vw); border-radius: 20px; overflow: hidden; background: color-mix(in oklab, var(--canvas) 86%, transparent); box-shadow: var(--bevel), 0 30px 80px oklch(0 0 0 / 0.5); backdrop-filter: blur(20px); }
+.pal-in { display: flex; align-items: center; gap: 12px; padding: 14px 16px; box-shadow: 0 1px 0 var(--lo), 0 2px 0 var(--hi); }
+.pal-in svg { width: 18px; height: 18px; fill: none; stroke: var(--muted); stroke-width: 1.8; stroke-linecap: round; flex: none; }
+.pal-in input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; font-size: 17px; font-weight: 500; color: var(--ink); user-select: text; }
+.palette kbd { font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: var(--muted); padding: 2px 6px; border-radius: 6px; box-shadow: var(--sunk); }
+.pal-list { max-height: 56vh; overflow-y: auto; padding: 6px 8px; }
+.pal-group { display: block; padding: 10px 10px 4px; }
+.pal-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 8px 10px; border-radius: 12px; color: var(--ink); }
+.pal-row small { display: block; color: var(--muted); font-size: 12px; }
+.pal-row.on { background: var(--glass-up); box-shadow: var(--lift); }
+.pal-foot { display: flex; gap: 16px; align-items: center; padding: 9px 16px; font-size: 12px; color: var(--muted); box-shadow: 0 -1px 0 var(--lo), inset 0 1px 0 var(--hi); }
+.toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 40; max-width: min(560px, 90vw); padding: 10px 16px; border-radius: 12px; background: color-mix(in oklab, var(--canvas) 82%, transparent); box-shadow: var(--bevel); backdrop-filter: blur(16px); font-size: 13px; }
+.toast.ok { box-shadow: var(--bevel), inset 3px 0 0 var(--pos-signal); }
+.toast.bad { box-shadow: var(--bevel), inset 3px 0 0 var(--caution-signal); }
+/* Two columns: the fans and the keyboard glance pair up under the gauges; the wide charts follow. */
+@media (max-width: 1100px) { .cockpit > .cp-late { order: 2; } }
+.tl-days .chip { gap: 6px; }
+
+/* Day and night (Lighting): controls beside today's brightness against the sun. */
+.dn { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(0, 2.4fr); gap: 16px clamp(16px, 2.4vw, 32px); align-items: start; }
+@media (max-width: 760px) { .dn { grid-template-columns: minmax(0, 1fr); } }
+.dn select { width: 100%; }
+.dn-ll { gap: 12px; flex-wrap: nowrap; }
+.dn-num { margin-top: 0; min-width: 0; }
+.dn-num .hexin { width: 100%; max-width: 130px; }
+.dn-head { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.dn-big { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; line-height: 1; }
+.dn-chart svg { display: block; width: 100%; height: auto; }
+.dn-chart.off { opacity: 0.5; }
+.dn-night { fill: color-mix(in oklab, var(--ink) 7%, transparent); }
+.dn-twilight { fill: color-mix(in oklab, var(--hue-amber-a) 12%, transparent); }
+.dn-day { fill: transparent; }
+.dn-area { fill: color-mix(in oklab, var(--hue-amber-mark) 20%, transparent); }
+.dn-line { fill: none; stroke: var(--hue-amber-mark); stroke-width: 2.5; stroke-linejoin: round; }
+.dn-mark { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 5; }
+.dn-now { stroke: var(--ink); stroke-width: 1.5; }
+.dn-dot { fill: var(--ink); }
+.dn-t { font-family: var(--font-mono); font-size: 13px; font-weight: 600; fill: var(--muted); }
+.dn-facts { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 8px 0 4px; font-size: 12.5px; color: var(--muted); }
+.dn-facts b { color: var(--ink); font-weight: 600; }
+
+/* Fan rotors: the blades turn on the compositor (FanRotor); at speed a still blur disc fades in over the blades'
+   sweep, as a real fan blurs, and the blades fade a little. */
+.r-blur { position: absolute; inset: 0; border-radius: 50%; pointer-events: none; opacity: 0; transition: opacity 700ms var(--ease);
+  background: radial-gradient(circle closest-side, transparent 17%, color-mix(in oklab, var(--ink) 14%, transparent) 24%, color-mix(in oklab, var(--ink) 22%, transparent) 46%, color-mix(in oklab, var(--ink) 9%, transparent) 56%, transparent 59%); }
+.r-blades { transition: opacity 700ms var(--ease); }
+
+/* The fans where they sit (FanLayout): the laptop from above, rear at the top; primaries larger at the rear
+   corners, secondaries smaller in front of them. */
+.chassis { display: flex; flex-direction: column; gap: 6px; padding: 8px clamp(8px, 1.4vw, 16px) 10px; border-radius: 22px; background: var(--etch); box-shadow: var(--well); margin-bottom: 12px; }
+.ch-edge { text-align: center; color: var(--subtle, var(--muted)); padding-bottom: 6px; border-bottom: 1px dashed var(--edge); }
+.ch-edge.front { padding: 6px 0 0; border-bottom: 0; border-top: 1px dashed var(--edge); }
+.ch-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px clamp(6px, 1.2vw, 18px); align-items: start; }
+.ch-col { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
+.ch-mid { display: flex; gap: 6px; padding-top: clamp(18px, 3vw, 44px); }
+.ch-chip { padding: 5px 7px; border-radius: 6px; border: 1px solid var(--edge-strong); background: var(--surface); font-family: var(--font-mono); font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted); }
+.fan-slot { border-radius: 16px; padding: 6px 6px 8px; outline: none; }
+.fan-slot[role='button'] { cursor: pointer; transition: background var(--dur-base) var(--ease); }
+.fan-slot[role='button']:hover { background: color-mix(in oklab, var(--ink) 5%, transparent); }
+.fan-slot.on { background: color-mix(in oklab, var(--ink) 8%, transparent); box-shadow: var(--raised); }
+.fan-slot:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.rotor.lg .r-dial { width: clamp(104px, 9vw, 140px); }
+.rotor.sm .r-dial { width: clamp(78px, 6.6vw, 104px); }
+.rotor.lg .r-pct { font-size: 22px; }
+.rotor.sm .r-pct { font-size: 17px; } .rotor.sm .r-rpm { font-size: 13px; }
+.chassis.compact { padding: 6px 8px 8px; margin-bottom: 10px; }
+.chassis.compact .ch-col { gap: 2px; }
+.chassis.compact .ch-mid { flex-direction: column; padding-top: clamp(16px, 2.2vw, 30px); }
+.chassis.compact .fan-slot { padding: 4px 2px; }
+.chassis.compact .rotor.lg .r-dial { width: clamp(70px, 5.8vw, 96px); }
+.chassis.compact .rotor.sm .r-dial { width: clamp(54px, 4.4vw, 72px); }
+.chassis.compact .rotor.lg .r-pct { font-size: 17px; } .chassis.compact .rotor.sm .r-pct { font-size: 14px; }
+.chassis.compact .r-rpm { font-size: 12px; } .chassis.compact .lbl { font-size: 8.5px; text-align: center; }.chassis .r-flag { position: static; margin-top: 3px; }

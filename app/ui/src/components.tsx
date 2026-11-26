@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Point } from './api';
-import { drawnRevPerSec, MAX_FRAME_S, rotorPercent } from './logic';
+import { BLADES, drawnRevPerSec, MAX_DRAWN_REV_PER_S, rotorPercent } from './logic';
 
 // ---------------------------------------------------------------- small pieces
 
@@ -50,6 +50,10 @@ export function Mark() {
 const tone = (c: number | null | undefined) => (c == null ? 'var(--faint)' : c >= 95 ? 'var(--neg-major)' : c >= 85 ? 'var(--caution-major)' : 'var(--pos-major)');
 
 /** A 240° arc gauge from `min` to `max`, with soft zone marks at 85 and 95. */
+/** The warm and hot marks sit this far outside the ring's centre line (viewBox units): the ring is 10 wide, so
+ * this leaves a clear 5-unit gap between them. */
+const ZONE_GAP = 11.25;
+
 export function Gauge({ label, value, min = 30, max = 105, unit = '°C', sub, tip }: { label: string; value: number | null; min?: number; max?: number; unit?: string; sub?: ReactNode; tip: string }) {
   const R = 66, C = 80, A0 = 150, SPAN = 240;
   const f = value == null ? 0 : Math.min(1, Math.max(0, (value - min) / (max - min)));
@@ -64,15 +68,17 @@ export function Gauge({ label, value, min = 30, max = 105, unit = '°C', sub, ti
       <div className="gauge">
         <svg viewBox="0 0 160 140">
           <path d={arc(A0, A0 + SPAN)} className="g-track" />
-          <path d={arc(zone(85), zone(95), R + 9)} className="g-zone warm" />
-          <path d={arc(zone(95), A0 + SPAN, R + 9)} className="g-zone hot" />
+          <path d={arc(zone(85), zone(95), R + ZONE_GAP)} className="g-zone warm" />
+          <path d={arc(zone(95), A0 + SPAN, R + ZONE_GAP)} className="g-zone hot" />
           {value != null && <path d={arc(A0, A0 + Math.max(0.5, f * SPAN))} className="g-fill" style={{ stroke: tone(value) }} />}
         </svg>
-        <div className="g-read">
+        {/* Sized from the gauge's own width (container units), so nothing meets the ring at any size: the value
+            and label inside the ring's inner circle, the clocks in the open gap under it. */}
+        <div className="g-core">
           <span className="g-val" style={{ color: tone(value) }}>{value ?? '—'}<small>{unit}</small></span>
           <span className="lbl">{label}</span>
-          {sub && <span className="g-sub">{sub}</span>}
         </div>
+        {sub && <span className="g-sub">{sub}</span>}
       </div>
     </Tip>
   );
@@ -168,53 +174,78 @@ export function Chart({ series, points, min, max, height = 180, onHover, hover }
 
 // ---------------------------------------------------------------- fan rotor with inertia
 
+/** How often a rotor's speed eases toward the reading, ms: only the rate changes here; the turning itself is the
+ * compositor's. */
+const EASE_MS = 100;
+
 /**
  * A fan drawn live: its target speed is the measured RPM; the rotor spins up and coasts down with inertia
- * (time constants like a real laptop fan's), so changes look physical. A screen refreshes ~60 times a second
- * and a fan at 4000 RPM turns ~67 times a second, so the drawn speed is scaled (it would strobe otherwise);
- * blur ghosts grow with speed. The number under it is the real reading.
+ * (time constants like a real laptop fan's), so changes look physical. A fan at 4000 RPM turns ~67 times a
+ * second, so the drawn speed is scaled (it would strobe otherwise); at speed a still blur disc fades in and the
+ * blades fade a little, as a real fan blurs. The number under it is the real reading.
+ *
+ * Smoothness (the owner, 2026-11-26: "clanky in high speed"): the blades turn in a Web Animations loop that runs
+ * on the compositor at the display's own refresh (120 Hz on the x17), never on the page's thread, so a busy page
+ * can't make them stutter. Inertia changes only the playback rate (`updatePlaybackRate` keeps the angle), ten
+ * times a second. The old 30-frame script loop moved a blade 15° a frame at top speed and its trailing ghost copy
+ * doubled the image: both read as ratcheting. Off screen the loop is paused.
  */
-export function FanRotor({ rpm, max, label, id, note, flag }: { rpm: number | null; max: number | null; label: string; id?: string; note?: string; flag?: 'stopped' | 'fixed' }) {
-  const g = useRef<SVGGElement>(null);
-  const ghosts = useRef<SVGGElement>(null);
+export function FanRotor({ rpm, max, label, id, note, flag, size }: { rpm: number | null; max: number | null; label: string; id?: string; note?: string; flag?: 'stopped' | 'fixed'; size?: 'lg' | 'sm' }) {
+  const dial = useRef<HTMLDivElement>(null);
+  const g = useRef<HTMLDivElement>(null);
+  const blur = useRef<HTMLDivElement>(null);
   const target = useRef(0);
   target.current = rpm ?? 0;
   useEffect(() => {
-    let raf = 0, last = performance.now(), angle = 0, omega = 0;
-    const step = (now: number) => {
-      const dt = Math.min(MAX_FRAME_S, (now - last) / 1000);
-      last = now;
-      // Drawn revolutions per second, capped at 2: with 11 blades a gap is 32.7°, and at 60 frames a second a
-      // rotor turning near one gap per frame looks frozen (the wagon-wheel strobe). 4600 RPM at the old scale
-      // was 34.5° a frame and read as stopped; 2 rev/s is 12° a frame, clearly turning. Speed shows in the blur.
-      const goal = drawnRevPerSec(target.current);
-      const tau = goal > omega ? 0.9 : 2.6; // spins up faster than it coasts down
-      omega += (goal - omega) * (1 - Math.exp(-dt / tau));
-      angle = (angle + omega * 360 * dt) % 360;
-      g.current?.setAttribute('transform', `rotate(${angle} 50 50)`);
-      if (ghosts.current) {
-        ghosts.current.setAttribute('transform', `rotate(${angle - Math.min(16, omega * 8)} 50 50)`);
-        ghosts.current.style.opacity = String(Math.min(0.45, omega * 0.22));
-      }
-      raf = requestAnimationFrame(step);
+    const el = g.current;
+    if (!el || typeof el.animate !== 'function') return;
+    // One turn a second at rate 1, so the playback rate is the drawn revolutions per second.
+    const spin = el.animate([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }], { duration: 1000, iterations: Infinity });
+    let rate = 0, shown = -1, seen = true;
+    spin.playbackRate = 0;
+    // Runs only while it can be seen and is turning: a stopped or scrolled-away rotor costs the compositor nothing.
+    const run = () => {
+      const want = seen && rate > 0;
+      if (want && spin.playState !== 'running') spin.play();
+      if (!want && spin.playState === 'running') spin.pause();
     };
-    raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
+    const ease = () => {
+      const goal = drawnRevPerSec(target.current);
+      const tau = goal > rate ? 0.9 : 2.6; // spins up faster than it coasts down
+      rate += (goal - rate) * (1 - Math.exp(-EASE_MS / 1000 / tau));
+      if (Math.abs(goal - rate) < 0.004) rate = goal;
+      if (Math.abs(rate - shown) < 0.002) return;
+      shown = rate;
+      if (spin.updatePlaybackRate) spin.updatePlaybackRate(rate); else spin.playbackRate = rate;
+      run();
+      const s = Math.min(1, rate / MAX_DRAWN_REV_PER_S);
+      if (blur.current) blur.current.style.opacity = (s * s * 0.9).toFixed(3);
+      el.style.opacity = (1 - s * 0.3).toFixed(3);
+    };
+    const timer = setInterval(ease, EASE_MS);
+    ease();
+    const io = typeof IntersectionObserver === 'function' && dial.current
+      ? new IntersectionObserver(([e]) => { seen = e.isIntersecting; run(); })
+      : null;
+    if (io && dial.current) io.observe(dial.current);
+    return () => { clearInterval(timer); io?.disconnect(); spin.cancel(); };
   }, []);
-  const blades = Array.from({ length: 11 }, (_, i) => i * (360 / 11));
+  const blades = Array.from({ length: BLADES }, (_, i) => i * (360 / BLADES));
   const blade = 'M50 50 C52 40 58 31 67 27 C63 34 58 42 54 51 Z';
   const pct = rotorPercent(rpm, max);
   return (
     <Tip text={note ?? `${label}${id ? ` (fan ${id})` : ''}: ${rpm ?? '—'} RPM measured${max ? `, ${pct ?? 0}% of the ${max} RPM it reports as its maximum (AWCC's "zone speed")` : ''}.`}>
-      <div className={`rotor ${flag ?? ''}`}>
-        <svg viewBox="0 0 100 100">
-          <circle cx="50" cy="50" r="46" className="r-ring" />
-          {pct != null && <circle cx="50" cy="50" r="46" className="r-arc" pathLength={100} strokeDasharray={`${pct} 100`} transform="rotate(-90 50 50)" />}
-          <circle cx="50" cy="50" r="40" className="r-well" />
-          <g ref={ghosts} className="r-ghost">{blades.map((a) => <path key={a} d={blade} transform={`rotate(${a} 50 50)`} />)}</g>
-          <g ref={g} className="r-blades">{blades.map((a) => <path key={a} d={blade} transform={`rotate(${a} 50 50)`} />)}</g>
-          <circle cx="50" cy="50" r="9" className="r-hub" />
-        </svg>
+      <div className={`rotor ${size ?? ''} ${flag ?? ''}`}>
+        <div className="r-dial" ref={dial}>
+          <svg viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="46" className="r-ring" />
+            {pct != null && <circle cx="50" cy="50" r="46" className="r-arc" pathLength={100} strokeDasharray={`${pct} 100`} transform="rotate(-90 50 50)" />}
+            <circle cx="50" cy="50" r="40" className="r-well" />
+          </svg>
+          <div ref={blur} className="r-blur" />
+          <div ref={g} className="r-spin r-blades"><svg viewBox="0 0 100 100">{blades.map((a) => <path key={a} d={blade} transform={`rotate(${a} 50 50)`} />)}</svg></div>
+          <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="9" className="r-hub" /></svg>
+        </div>
         <span className="r-pct mono">{pct != null ? `${pct}%` : '—'}</span>
         <span className="r-rpm mono">{rpm ?? '—'}<small> rpm</small></span>
         <span className="lbl">{label}{id && <span className="r-id"> · {id}</span>}</span>

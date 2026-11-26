@@ -210,6 +210,10 @@ pub struct LightingSettings {
     /// A PC-driven animation the app keeps running (`crate::live`). Missing in older files: off.
     #[serde(default)]
     pub live: crate::live::LiveSettings,
+    /// Brighter by day, dimmer at night, following the sun where you are (`crate::daylight`). Missing in
+    /// older files: off.
+    #[serde(default)]
+    pub daylight: crate::daylight::DaylightSettings,
 }
 
 impl LightingSettings {
@@ -222,7 +226,7 @@ impl LightingSettings {
 
 impl Default for LightingSettings {
     fn default() -> Self {
-        LightingSettings { mode: Mode::Awcc, keyboard: KeyboardLight::default(), zones: BTreeMap::new(), off_on_sleep: true, off_on_lid_close: true, off_on_display_off: true, clock_on_display_off: false, dim_on_battery_saver: false, pause_awcc: true, led_balance: LedBalance::default(), led_palette: BTreeMap::new(), reactive: Default::default(), live: Default::default() }
+        LightingSettings { mode: Mode::Awcc, keyboard: KeyboardLight::default(), zones: BTreeMap::new(), off_on_sleep: true, off_on_lid_close: true, off_on_display_off: true, clock_on_display_off: false, dim_on_battery_saver: false, pause_awcc: true, led_balance: LedBalance::default(), led_palette: BTreeMap::new(), reactive: Default::default(), live: Default::default(), daylight: Default::default() }
     }
 }
 
@@ -255,6 +259,7 @@ impl LightingSettings {
         self.led_balance.validate()?;
         self.reactive.validate()?;
         self.live.validate()?;
+        self.daylight.validate().map_err(|e| format!("day and night: {e}"))?;
         for (from, to) in &self.led_palette {
             parse_rgb(from).and_then(|_| parse_rgb(to)).map_err(|e| format!("LED palette {from} -> {to}: {e}"))?;
         }
@@ -320,6 +325,9 @@ pub struct PowerState {
     pub lid_closed: bool,
     pub display_off: bool,
     pub energy_saver: bool,
+    /// The brightness the sun's position asks for now, %, while day and night is on (`crate::daylight`);
+    /// `None` until the app has looked.
+    pub daylight: Option<u32>,
 }
 
 /// A dark trigger is active (sleep, lid closed, display off, each by its setting; the display off shows the
@@ -328,17 +336,28 @@ pub fn is_dark(s: &LightingSettings, p: &PowerState) -> bool {
     (p.suspended && s.off_on_sleep) || (p.lid_closed && s.off_on_lid_close) || (p.display_off && s.off_on_display_off && !s.clock_on_display_off)
 }
 
-/// The brightness to show, %: 0 when off or dark, capped at [`DIM_PCT`] under Energy Saver when set.
+/// The brightness to show, %: 0 when off or dark; the sun's level instead of the set brightness while day and
+/// night is on; capped at [`DIM_PCT`] under Energy Saver when set.
 pub fn level(s: &LightingSettings, p: &PowerState) -> u32 {
     if !s.keyboard.on || is_dark(s, p) {
         return 0;
     }
-    let b = s.keyboard.brightness.min(100);
+    let b = match (s.daylight.on, p.daylight) {
+        (true, Some(d)) => d,
+        _ => s.keyboard.brightness,
+    }
+    .min(100);
     if p.energy_saver && s.dim_on_battery_saver {
         b.min(DIM_PCT)
     } else {
         b
     }
+}
+
+/// The reports that change only the brightness, to `pct` (day and night's gradual steps): colours, effects and
+/// a running live animation are left as they are.
+pub fn level_plan(pct: u32) -> Vec<V5Step> {
+    v5::brightness(brightness_byte(pct))
 }
 
 /// 0..=100 % to the v5 brightness byte 0..=255 (`COMMV5_turnOnSet` byte 4), rounded: 100 -> 255, 30 -> 77.
@@ -523,6 +542,8 @@ pub enum PowerEvent {
     Lid { open: bool },
     Display { on: bool },
     EnergySaver { on: bool },
+    /// Day and night's level now (`None`: off).
+    Daylight { pct: Option<u32> },
 }
 
 /// What to do about it.
@@ -533,6 +554,8 @@ pub enum LightAction {
     Dark,
     /// Write [`plan`] for the current settings after this long.
     Reapply { after_ms: u64 },
+    /// Only the brightness changed (day and night): send [`level_plan`] for the new level, nothing else.
+    Level,
 }
 
 /// The wait before re-applying after a resume: the keyboard needs a moment, and AWCC writes on wake.
@@ -549,6 +572,7 @@ pub fn on_power_event(state: &mut PowerState, ev: PowerEvent, s: &LightingSettin
         PowerEvent::Lid { open } => state.lid_closed = !open,
         PowerEvent::Display { on } => state.display_off = !on,
         PowerEvent::EnergySaver { on } => state.energy_saver = on,
+        PowerEvent::Daylight { pct } => state.daylight = pct,
     }
     if s.mode != Mode::Custom {
         return LightAction::Nothing;
@@ -559,6 +583,7 @@ pub fn on_power_event(state: &mut PowerState, ev: PowerEvent, s: &LightingSettin
     match level(s, state) {
         after if after == before => LightAction::Nothing,
         0 => LightAction::Dark,
+        _ if before > 0 && matches!(ev, PowerEvent::Daylight { .. }) => LightAction::Level,
         _ => LightAction::Reapply { after_ms: 0 },
     }
 }
@@ -1321,6 +1346,36 @@ mod tests {
         assert_eq!(setting_event(PowerSetting::Lid, 0), PowerEvent::Lid { open: false });
         assert_eq!(setting_event(PowerSetting::Display, 2), PowerEvent::Display { on: true }, "dimmed counts as on");
         assert_eq!(setting_event(PowerSetting::EnergySaver, 2), PowerEvent::EnergySaver { on: true });
+    }
+
+    /// Day and night: the sun's level replaces the set brightness while it's on, under the dark rules and the
+    /// Energy Saver cap; a change of level sends the brightness alone.
+    #[test]
+    fn day_and_night_sets_the_level_and_sends_brightness_only() {
+        let mut s = LightingSettings { mode: Mode::Custom, ..Default::default() };
+        s.keyboard.brightness = 70;
+        let sun = |pct| PowerState { daylight: Some(pct), ..Default::default() };
+        assert_eq!(level(&s, &sun(40)), 70, "off: the set brightness");
+        s.daylight.on = true;
+        assert_eq!(level(&s, &PowerState::default()), 70, "on, but not looked yet: the set brightness");
+        assert_eq!(level(&s, &sun(40)), 40);
+        assert_eq!(level(&s, &PowerState { lid_closed: true, ..sun(40) }), 0, "dark rules still win");
+        s.dim_on_battery_saver = true;
+        assert_eq!(level(&s, &PowerState { energy_saver: true, ..sun(90) }), DIM_PCT, "Energy Saver still caps it");
+        s.dim_on_battery_saver = false;
+
+        let mut st = sun(100);
+        assert_eq!(on_power_event(&mut st, PowerEvent::Daylight { pct: Some(100) }, &s), LightAction::Nothing, "same level");
+        assert_eq!(on_power_event(&mut st, PowerEvent::Daylight { pct: Some(62) }, &s), LightAction::Level, "dusk: brightness only");
+        assert_eq!(st.daylight, Some(62));
+        assert_eq!(on_power_event(&mut st, PowerEvent::Daylight { pct: Some(0) }, &s), LightAction::Dark, "night at 0 %: off");
+        assert_eq!(on_power_event(&mut st, PowerEvent::Daylight { pct: Some(10) }, &s), LightAction::Reapply { after_ms: 0 }, "back from dark: everything again");
+        s.daylight.on = false;
+        assert_eq!(on_power_event(&mut st, PowerEvent::Daylight { pct: None }, &s), LightAction::Nothing, "turned off: the save that turned it off wrote 70 % already");
+        assert_eq!(level(&s, &st), 70);
+        let awcc = LightingSettings { daylight: crate::daylight::DaylightSettings { on: true, ..Default::default() }, ..Default::default() };
+        assert_eq!(on_power_event(&mut sun(100), PowerEvent::Daylight { pct: Some(20) }, &awcc), LightAction::Nothing, "awcc mode never writes");
+        assert_eq!(level_plan(40), v5::brightness(102));
     }
 
     /// The preview's pause lease on a fake clock: one pause for a run of writes, AWCC resumed 2 s after the
